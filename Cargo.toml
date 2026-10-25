@@ -1,0 +1,31 @@
+[package]
+name = "petri"
+version = "0.3.0"
+edition = "2021"
+rust-version = "1.99"
+description = "Fail-closed laboratories for coding agents"
+license = "MIT"
+
+[dependencies]
+anyhow = "1"
+blake3 = "1"
+clap = { version = "4", features = ["derive"] }
+directories = "6"
+flate2 = "1"
+git2 = { version = "0.21", default-features = false, features = ["vendored-libgit2"] }
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde-saphyr = { version = "2", default-features = false, features = ["deserialize"] }
+tar = "0.4"
+uuid = { version = "1", features = ["v4", "serde"] }
+sha2 = "0.10"
+hex = "0.4"
+fs2 = "0.4"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+lto = "thin"
+strip = true

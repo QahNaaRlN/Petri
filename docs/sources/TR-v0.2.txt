@@ -1,0 +1,72 @@
+ТЗ — Technical Requirements — Проект Petri — v0.2 (с учетом ревью)
+OS для агентов
+
+**Статус:** Draft v0.2 — исправляет пробелы v0.1
+**Текст:** RU, термины EN, аббревиатура кириллицей ТЗ
+
+Что исправлено по ревью
+1. Worktree не защищает main сам по себе — добавлен Git-брокер и права.
+2. Seccomp не фильтрует домены и пути — добавлен Landlock + eBPF + DNS-прокси.
+3. Противоречие в секретах — разделены signing-секреты (zero-exposure) и bearer-токены (short-lived, acknowledged risk).
+4. Docker Compose требует >1 метода — определен поддерживаемый набор API.
+5. Противоречие «без демона» vs брокер/сокет, расположение лаб, rootless — уточнено.
+6. Приемка на 3 ОС требует реальных проверок — введена поэтапная приемка.
+
+1. Git-защита — не только worktree
+**Проблема v0.1:** worktree шарит .git/common-dir, агент может из worktree сделать push в main через прямой доступ к bare.
+
+**Решение v0.2:**
+- Bare-репозиторий хранится в `~/.petri/bare/<hash>` и принадлежит хосту (0700, owner хост). В контейнер он не монтируется вообще.
+- В лабу монтируется только worktree с файлом `.git` указывающим на bare через read-only bind + `mount --bind -o ro`.
+- Все git-операции агента идут через wrapper `petri git` (shim в PATH контейнера перед /usr/bin/git). Shim вызывает `GitManager` на хосте по unix-socket.
+- GitManager проверяет политику `deny_push_to`, `allowed_remotes`. Push в main отклоняется с `PolicyDenied` до выполнения.
+- Дополнительно: `reference-transaction` hook в bare отклоняет любые записи в refs/heads/main от не-хоста.
+- Финальная гарантия: файловая система — main-ветка не writable даже если агент обойдет shim.
+
+AC уточнение: попытка `git push origin main` внутри лабы должна падать с ошибкой политики, а не с сетевой.
+
+2. Сеть и файлы — не seccomp
+**Проблема:** seccomp фильтрует только syscall номера, не домены и не пути.
+
+**Решение v0.2:**
+- **Файлы:** Landlock ABI v3 (Linux 5.19+) + mount namespace. Все кроме /workspace и /tmp — ro. Пути из `deny.paths` — Landlock DENY + umount. На Mac/Win — то же внутри microVM.
+- **Сеть:** default `none` = нет veth. Если `network.allow` задан — создается slirp/pasta с DNS-прокси. DNS-прокси резолвит только allowlist доменов, остальные NXDOMAIN. Egress eBPF cgroup фильтр дополнительно блочит IP вне allowlist. События пишутся в `events.jsonl` как `network_blocked{domain}`.
+- Seccomp остается для syscall фильтра (mount, bpf, keyctl и т.д.) — 80 разрешенных.
+
+3. Секреты — честная модель
+**Проблема:** токен, выданный процессу через файл или credential helper, доступен процессу. Удаления из логов недостаточно.
+
+**Решение v0.2 — два класса секретов:**
+- **Class A — Signing (zero-exposure):** SSH ключ, GPG. Приватный ключ никогда не покидает брокер. `SSH_AUTH_SOCK` → прокси на хост, подпись на хосте. Агент не получает ключ. Это как в 1Password for Agents.
+- **Class B — Bearer (short-lived, acknowledged risk):** GitHub token, NPM token. Токен должен попасть в процесс. Митигируем: 
+  - Выдача только по запросу с причиной, TTL 2-5 мин, одноразовый, auto-revoke.
+  - Инжект не через файл на диске, а через memfd (`/proc/self/fd`) или env с `memfd_create` и `unlink` сразу после чтения, или через брокер-медиированный push (брокер сам делает push, агент не видит токен).
+  - Явное логирование: в доках указано что bearer-секреты доступны процессу, риск accepted, рекомендуется использовать Class A где возможно.
+- Скраб логов — дополнительный слой, не основная защита.
+
+4. Docker Compose — определить покрытие
+**Проблема v0.1:** заявлена совместимость, но реализован 1 метод.
+
+**Решение v0.2 — матрица совместимости:**
+- MVP (Phase 1): `GET /version`, `GET /containers/json`, `POST /containers/create`, `POST /containers/{id}/start|stop|remove`, `GET /containers/{id}/json|logs`, `GET /images/json`, `POST /images/create` (pull). Остальное возвращает `501 Not Implemented` с явным сообщением, а не фейковый успех.
+- Phase 2: `networks`, `volumes`, `exec`, `POST /build`.
+- Compose: работает если использует только MVP. Если требует networks/volumes — явно говорим что не поддерживается и предлагаем fallback `DOCKER_HOST=real-docker`.
+- В ТЗ добавлен AC: не реализованные методы должны падать с 501, а не имитировать.
+
+5. Уточнение противоречий
+- **Без демона vs брокер/сокет:** Core runtime — без демона, каждый `petri create` — супервайзер. Vault broker и Docker-compat socket — опциональные user-сервисы (`systemd --user`, `launchd`). Они не требуются для базовой изоляции, требуются только для секретов и совместимости. В доках разделено.
+- **Расположение лаб:** Канон — `~/.petri/labs/{id}/workspace` (глобально, не загрязняет проект). Для IDE — опциональный symlink `.petri/labs/{id} -> ~/.petri/labs/{id}/workspace` по команде `petri link`. Проект хранит только `petri.yaml`.
+- **Rootless:** Linux — требует user namespace, subuid/subgid настроены, cgroup v2 delegation. Без root, но с требованиями к хосту (ядро >=5.19 для Landlock, >=5.15 для io_uring ограничений). Документировано в TS.
+
+6. Приемка на 3 ОС — поэтапно
+- Phase 1 (Linux): все AC-1..AC-6 зеленые в CI на ubuntu-24.04.
+- Phase 2 (Mac/Win): изоляция и Git-защита внутри microVM/WSL2, тесты в реальных раннерах macos-14, windows-2022.
+- Phase 3 (Signing, biometry, perf, dogfooding): ручные QA-гейты, не автоматизируются написанием кода в Linux. Подписи пакетов проверяются cosign/sigstore, биометрия — ручной тест, perf — bench на железных машинах, dogfooding — 3 недели.
+
+Принцип: не имитировать успех
+Любая нереализованная возможность в текущей фазе возвращает явную ошибку `NotImplemented` с указанием фазы, а не фейковый OK.
+
+7. Roadmap (обновлен)
+**Phase 1 — Linux runtime (4-6 недель):** изоляция (ns+overlay+Landlock+eBPF), жизненный цикл лаб, Git-брокер, blackbox, stack hub.
+**Phase 2 — Cross-platform (3-4 недели):** Mac microVM virtiofs, Win WSL2 backend.
+**Phase 3 — Vault + Docker compat (3-4 недели):** брокер секретов Class A/B, Docker API MVP, подписи, бенчмарки.
