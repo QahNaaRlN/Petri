@@ -32,7 +32,7 @@ fn real_isolation_preserves_host_and_blocks_rootfs_writes() {
     let dir = store.lab_dir(&lab.id).unwrap();
     fs::write(dir.join("blackbox/audit-marker"), b"host-only").unwrap();
     fs::write(temp.path().join("host-marker"), b"untouched").unwrap();
-    let script="set -eu; test -z \"${PETRI_TEST_SECRET+x}\"; test ! -e /logs/audit-marker; test ! -e /.petri-oldroot/etc/passwd; test ! -d /git; if (echo escaped > /petri-escape) 2>/dev/null; then exit 81; fi; if (echo escaped > /run/escape) 2>/dev/null; then exit 82; fi; if /bin/busybox wget -T 1 -O /tmp/network-output http://1.1.1.1 2>/dev/null; then exit 83; fi; echo safe > /workspace/result; test -e /proc/self/status; /bin/busybox rm /workspace/original";
+    let script="set -eu; test -z \"${PETRI_TEST_SECRET+x}\"; test ! -e /logs/audit-marker; test ! -e /.petri-oldroot/etc/passwd; test ! -d /git; if (exec 3< /proc/1/mem) 2>/dev/null; then exit 84; fi; if (echo escaped > /petri-escape) 2>/dev/null; then exit 81; fi; if (echo escaped > /run/escape) 2>/dev/null; then exit 82; fi; if /bin/busybox wget -T 1 -O /tmp/network-output http://1.1.1.1 2>/dev/null; then exit 83; fi; echo safe > /workspace/result; test -e /proc/self/status; /bin/busybox rm /workspace/original";
     let output = Command::new(env!("CARGO_BIN_EXE_petri"))
         .arg("--home")
         .arg(&store.home)

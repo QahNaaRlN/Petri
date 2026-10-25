@@ -42,3 +42,7 @@ Review привёл к коду и unit-тестам перечисленных 
 ## Финальная проверка зависимостей
 
 RustSec выявил informational unsound RUSTSEC-2026-0183/0184 в git2 0.20 и unmaintained RUSTSEC-2024-0449 в unsafe-libyaml. Зависимости обновлены: git2 0.21, serde-saphyr 2 (deserialize-only; include/properties отключены). Повторный cargo audit: 0 vulnerabilities, 0 warnings; исключения advisory не добавлялись.
+
+## Уточнение после проверки в CI
+
+На `251cd325aa53a3b983cc89930ae55df64d7d5f22` реальный Linux E2E прошёл на GitHub Ubuntu runner (1 passed, 0 ignored); это подтверждает проверенный сценарий, не отсутствие всех путей побега. В последующем усилении init получает `PR_SET_DUMPABLE=0` до fork payload; E2E дополнен отрицательной проверкой открытия `/proc/1/mem`. Проверки новых коммитов видны в PR №1.

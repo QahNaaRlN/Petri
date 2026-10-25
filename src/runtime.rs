@@ -377,6 +377,16 @@ mod linux {
         }
         anyhow::ensure!(alive == 0, "namespace worker exited during init startup");
         prepare_root(opts)?;
+        // The payload shares this user namespace and UID with its privileged
+        // reaper. Explicitly deny ptrace-style /proc/1/mem, fd and root access;
+        // same-UID credentials must never become an alias to the init process.
+        // A normal payload exec resets its own dumpability, not this parent's.
+        unsafe {
+            cvt(
+                libc::prctl(libc::PR_SET_DUMPABLE, 0),
+                "protect namespace init from payload inspection",
+            )?;
+        }
         let payload = unsafe { libc::fork() };
         if payload < 0 {
             bail!("fork payload: {}", std::io::Error::last_os_error());

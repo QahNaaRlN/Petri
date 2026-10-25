@@ -23,9 +23,9 @@
 
 | Исходный критерий | Статус | Что ещё требуется для полного AC |
 | --- | --- | --- |
-| AC-1 Жизненный цикл | Частично | Реальный запуск на подходящем kernel runner и измеренная скорость; stock host без готового стека требует отдельного bootstrap |
+| AC-1 Жизненный цикл | Частично | Измеренная скорость и полный сценарий агента; базовый native Linux E2E прошёл в CI, но stock host без готового стека требует отдельного bootstrap |
 | AC-2 Git-иммутабельность | Частично | Локальные операции и защита исходного refs реализованы; полноценный авторизованный агентский Git broker/push отсутствует |
-| AC-3 Изоляция | Код есть, kernel E2E — отдельный gate | Реальные тесты host path/network/escape на поддерживаемой конфигурации; полноценный аудит network_blocked отсутствует |
+| AC-3 Изоляция | Базовый native Linux E2E прошёл в CI; полный AC частичен | Реальные тесты host path/network/escape на поддерживаемой конфигурации; полноценный аудит network_blocked отсутствует |
 | AC-4 Vault | Не реализован | Keychain/1Password, signing protocol, authorization, revoke, audit, real TouchID/Hello |
 | AC-5 StackHub | Частично | Локальный OCI/rootfs и reuse есть; registry node22 catalog, подписи, SBOM, reproducible build и OCI совместимость шире поднабора отсутствуют |
 | AC-6 Наблюдаемость | Частично | Host events и захват вывода есть; полноценный PTY replay, FS/process/network event collection и upper-layer diff не реализованы |
@@ -41,18 +41,18 @@
 | `cargo test --all-targets --all-features --locked` | 37 unit + 6 integration = **43 passed**, 0 failed; 1 native E2E явно ignored |
 | `cargo fmt --all --check` | Успешно |
 | `cargo clippy --all-targets --all-features --locked -- -D warnings` | Успешно, без предупреждений |
-| `cargo build --release --locked` | Успешно; Linux ELF **4,071,880 bytes** (3.88 MiB) |
+| `cargo build --release --locked` | Успешно; Linux ELF **4,072,008 bytes** (3.88 MiB) |
 | `cargo audit --json --no-fetch --file Cargo.lock` | **0 vulnerabilities, 0 warnings**, после обновления git2 и YAML-парсера; база RustSec загружена в этом сеансе |
 | Хеши оригиналов | 8/8 совпадают с SHA256SUMS |
 | Локальные Markdown-ссылки | Все разрешаются |
 | `petri doctor` вне ограничений tool sandbox | namespace probe available; Landlock ABI -1, `Function not implemented (os error 38)`; **supported=false** |
 
-Native E2E не объявлен пройденным: хост не предоставляет Landlock. Успешно проверен отдельный отрицательный integration test: при недоступной изоляции/неполном стеке команда не исполняется на хосте, маркер не создаётся, статус становится Failed и записывается аудит. Linux E2E вынесен в отдельную CI job с реальным static BusyBox; результат GitHub CI на момент этой записи ещё не получен. Компиляция/выполнение на macOS и Windows локально не проверялись. Coverage и perf не измерены.
+Локальный native E2E не пройден: текущий хост не предоставляет Landlock. Успешно проверен отдельный отрицательный integration test: при недоступной изоляции/неполном стеке команда не исполняется на хосте, маркер не создаётся, статус становится Failed и записывается аудит. Linux E2E вынесен в отдельную CI job с реальным static BusyBox; на коммите `251cd325aa53a3b983cc89930ae55df64d7d5f22` настоящий E2E прошёл: **1 passed, 0 failed, 0 ignored** ([CI run](https://github.com/QahNaaRlN/Petri/actions/runs/40242644431)). В том же прогоне audit и переносимые Linux/macOS проверки прошли; Windows release-сборка на момент записи ещё выполнялась. Локально macOS/Windows не запускались. Последующие результаты доступны в PR. Coverage и perf не измерены.
 Внешний контейнер/ограниченный executor может запрещать Unix socket либо user namespaces. Разрешение tool sandbox на локальный socket не равняется выдаче capabilities внутри лабы. Неуспешный syscall probe должен остаться диагностическим отказом, а не поводом ослабить профиль.
 
 ## Открытые релизные гейты
 
-- Настоящий Linux E2E изоляции на документированной конфигурации, включая процессы-потомки, сигналы и filesystem escape fixtures.
+- Расширенный Linux E2E: процессы-потомки, сигналы, более широкий набор filesystem escape fixtures; базовый native E2E уже прошёл.
 - Групповые cgroup limits, circuit breaker и проверенный механизм ограниченной сети.
 - Типизированный Git broker/adapter агента и безопасный authenticated Vault.
 - VM/WSL2 backends; реальные macOS/Windows runners и ручная биометрия.
