@@ -9,7 +9,7 @@
   },
   "default_branch": "master",
   "pull_request_1": {
-    "base": "main",
+    "base": "dev",
     "head": "feat/petri-v0.3",
     "draft": true,
     "merged": false
@@ -37,5 +37,24 @@
     "performed": false,
     "reason": "Cloud Linux executor has no access to the local Windows filesystem."
   },
-  "no_merge_or_branch_deletion_performed": true
+  "no_merge_or_branch_deletion_performed": true,
+  "dev": {
+    "exists": true,
+    "sha": "f7a2af7916ac5db10fa4eb9330ed8336c5b933b7",
+    "protected": false
+  },
+  "branch_model": "working branches -> dev -> main; same-repository main -> dev synchronization",
+  "browser": {
+    "native_computer_use_available": false,
+    "browser_control_available": false,
+    "alternative": "TinyFish suggested; connection not confirmed"
+  },
+  "latest_apply": {
+    "status": "failed",
+    "completed_writes": 0,
+    "method": "PATCH",
+    "endpoint": "repos/QahNaaRlN/Petri",
+    "http_status": 403
+  },
+  "master_deletion_performed": false
 }

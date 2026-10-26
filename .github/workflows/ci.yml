@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   pull_request:
   workflow_dispatch:
 
@@ -28,6 +28,8 @@ jobs:
           toolchain: 1.99.1
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      - name: Validate branch flow
+        run: python scripts/check_branch_flow.py
       - name: Formatting
         run: cargo fmt --all -- --check
       - name: Lints
@@ -35,7 +37,7 @@ jobs:
       - name: Portable host tests (native isolation is a separate Linux gate)
         run: cargo test --locked --all-features
       - name: Repository setup tests
-        run: python -m unittest discover -s tests -p "test_repository_setup.py" -v
+        run: python -m unittest discover -s tests -p "test_*.py" -v
       - name: Windows clone script validation
         if: runner.os == 'Windows'
         shell: pwsh

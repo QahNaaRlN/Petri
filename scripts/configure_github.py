@@ -2,8 +2,11 @@
 """Conservative GitHub administration bootstrap for QahNaaRlN/Petri.
 
 Default execution only reads settings and prints a plan. --apply is the only
-mutation mode; --verify is read-only. Uses an existing gh identity, never a
-shell, login flow, token argument, forced push, bypass, or branch deletion.
+mutation mode; --verify is read-only. Uses an existing gh identity with no
+user-provided shell fragments, login flow, token arguments, history rewrites,
+or protection bypass. Git invokes one constant gh credential helper for the
+conditional deletion transport; its lease flag guards deletion of master only.
+Legacy master deletion additionally requires --delete-master and ancestry proof.
 Settings are re-read before each write, but the GitHub API offers no transaction
 covering this migration: avoid running concurrent administration operations.
 """
@@ -21,6 +24,8 @@ import tempfile
 from typing import Any
 
 REPOSITORY = "QahNaaRlN/Petri"
+GIT_REMOTE = f"https://github.com/{REPOSITORY}.git"
+LEASE_DELETE = "GIT_PUSH_LEASE_DELETE"
 ACTIONS_APP_ID = 15368
 REQUIRED_CONTEXTS = (
     "Build and portable tests (ubuntu-24.04)",
@@ -31,8 +36,8 @@ REQUIRED_CONTEXTS = (
 )
 REPOSITORY_SETTINGS = {
     "default_branch": "main",
-    "allow_squash_merge": True,
-    "allow_merge_commit": False,
+    "allow_squash_merge": False,
+    "allow_merge_commit": True,
     "allow_rebase_merge": False,
     "delete_branch_on_merge": True,
     "allow_update_branch": True,
@@ -57,6 +62,46 @@ class GitHubError(SetupError):
 
 
 class GitHub:
+    def delete_master_with_lease(self, expected_sha: str) -> None:
+        """Git receive-pack atomically checks the old SHA before deleting.
+
+        REST ref DELETE has no expected-old-SHA predicate and is deliberately
+        never used. The only shell command is Git's constant gh credential helper;
+        neither user input nor credentials are interpolated into that string.
+        """
+        if not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", expected_sha):
+            raise SetupError("invalid expected master SHA for conditional deletion")
+        overrides = ("GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE",
+                     "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES")
+        if any(os.environ.get(key) for key in overrides):
+            raise SetupError("Git repository override environment is present; refusing to operate outside the temporary bare repository")
+        env = os.environ.copy()  # Preserve runtime proxy/auth-header/guard settings.
+        env.update(GIT_TERMINAL_PROMPT="0", GIT_ASKPASS="", SSH_ASKPASS="")
+        def run(args: list[str]) -> str:
+            try:
+                result = subprocess.run(args, capture_output=True, text=True, check=False, timeout=120, env=env)
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                raise SetupError("conditional master deletion could not complete; inspect the branch before retrying") from exc
+            if result.returncode:
+                # Raw output may contain credential/helper/trace data. Never log it.
+                raise SetupError("conditional master deletion was rejected or failed; inspect the branch and configured gh permissions before retrying")
+            return result.stdout
+        with tempfile.TemporaryDirectory(prefix="petri-repository-lease-") as directory:
+            root = Path(directory)
+            bare = root / "empty.git"
+            hooks = root / "empty-hooks"
+            hooks.mkdir()
+            run(["git", "-c", "init.templateDir=", "init", "--bare", str(bare)])
+            git = ["git", "--git-dir", str(bare), "-c", f"core.hooksPath={hooks}",
+                   "-c", "core.askPass=", "-c", "credential.helper=",
+                   "-c", "credential.helper=!gh auth git-credential"]
+            run(git + ["remote", "add", "origin", GIT_REMOTE])
+            urls = run(git + ["remote", "get-url", "--push", "--all", "origin"]).splitlines()
+            if urls != [GIT_REMOTE]:
+                raise SetupError("Git push URL was rewritten or ambiguous; refusing conditional deletion")
+            run(git + ["push", f"--force-with-lease=refs/heads/master:{expected_sha}",
+                       "origin", ":refs/heads/master"])
+
     def call(self, method: str, endpoint: str, payload: dict | None = None,
              *, optional: bool = False, paginate: bool = False) -> Any:
         args = ["gh", "api", "--method", method, endpoint,
@@ -165,7 +210,7 @@ def protection_payload() -> dict:
             "bypass_pull_request_allowances": {"users": [], "teams": [], "apps": []},
         },
         "restrictions": None,
-        "required_linear_history": True,
+        "required_linear_history": False,
         "allow_force_pushes": False,
         "allow_deletions": False,
         "required_conversation_resolution": True,
@@ -175,38 +220,38 @@ def protection_payload() -> dict:
     }
 
 
-def protection_issues(protection: dict | None) -> list[str]:
+def protection_issues(protection: dict | None, branch: str = "main") -> list[str]:
     if protection is None:
-        return ["main has no branch protection"]
+        return [f"{branch} has no branch protection"]
     issues = []
     checks = parse_contexts(protection)
     if checks != {name: ACTIONS_APP_ID for name in REQUIRED_CONTEXTS}:
-        issues.append("main must require exactly the five CI contexts bound to GitHub Actions app_id 15368")
+        issues.append(f"{branch} must require exactly the five CI contexts bound to GitHub Actions app_id 15368")
     if (protection.get("required_status_checks") or {}).get("strict") is not True:
-        issues.append("main must require strict/up-to-date status checks")
-    for key in ("enforce_admins", "required_linear_history", "required_conversation_resolution"):
+        issues.append(f"{branch} must require strict/up-to-date status checks")
+    for key in ("enforce_admins", "required_conversation_resolution"):
         if not enabled(protection, key):
-            issues.append(f"main must enable {key}")
-    for key in ("allow_force_pushes", "allow_deletions"):
+            issues.append(f"{branch} must enable {key}")
+    for key in ("allow_force_pushes", "allow_deletions", "required_linear_history"):
         # Missing booleans are not accepted as evidence of disabled settings.
         if not isinstance(protection.get(key), dict) or protection[key].get("enabled") is not False:
-            issues.append(f"main must disable {key}")
+            issues.append(f"{branch} must disable {key}")
     if enabled(protection, "lock_branch"):
-        issues.append("main is locked read-only; repository administration requires manual review")
+        issues.append(f"{branch} is locked read-only; repository administration requires manual review")
     reviews = protection.get("required_pull_request_reviews")
     if not isinstance(reviews, dict):
-        issues.append("main must require pull requests")
+        issues.append(f"{branch} must require pull requests")
     else:
         for key, desired in (("dismiss_stale_reviews", True), ("require_code_owner_reviews", False),
                              ("required_approving_review_count", 0), ("require_last_push_approval", False)):
             actual = reviews.get(key)
             if type(actual) is not type(desired) or actual != desired:
-                issues.append(f"main pull-request setting {key} must be {desired}")
+                issues.append(f"{branch} pull-request setting {key} must be {desired}")
         bypass = reviews.get("bypass_pull_request_allowances") or {}
         if not isinstance(bypass, dict):
             raise SetupError("invalid pull-request bypass allowances")
         if any(bypass.get(key) for key in ("users", "teams", "apps")):
-            issues.append("main must not allow specified users, teams or apps to bypass pull requests")
+            issues.append(f"{branch} must not allow specified users, teams or apps to bypass pull requests")
     return issues
 
 
@@ -215,10 +260,14 @@ class Snapshot:
     repository: dict
     main: dict | None
     master: dict | None
+    dev: dict | None
+    dev_protection: dict | None
+    comparison: dict | None
     protection: dict | None
     protection_branch: str | None
     rulesets: list[dict]
     legacy_prs: list[dict]
+    master_head_prs: list[dict]
 
     def safe_report(self) -> dict:
         return {
@@ -226,23 +275,30 @@ class Snapshot:
             "settings": {key: self.repository.get(key) for key in REPOSITORY_SETTINGS},
             "main_sha": (self.main or {}).get("commit", {}).get("sha"),
             "master_sha": (self.master or {}).get("commit", {}).get("sha"),
+            "dev_sha": (self.dev or {}).get("commit", {}).get("sha"),
+            "dev_protection_issues": protection_issues(self.dev_protection, "dev"),
+            "dev_checks": parse_contexts(self.dev_protection),
+            "dev_required_signatures_enabled": enabled(self.dev_protection, "required_signatures"),
+            "master_ancestry_status": (self.comparison or {}).get("status"),
             "protection_branch": self.protection_branch,
             "protection_issues": protection_issues(self.protection),
             "checks": parse_contexts(self.protection),
             "active_ruleset_ids": [rule.get("id") for rule in self.rulesets if rule.get("enforcement") != "disabled"],
             "required_signatures_enabled": enabled(self.protection, "required_signatures"),
             "open_prs_targeting_master": [pr["number"] for pr in self.legacy_prs],
+            "open_prs_from_master": [pr["number"] for pr in self.master_head_prs],
         }
 
 
-def snapshot(api: GitHub) -> Snapshot:
+def snapshot(api: GitHub, delete_master: bool = False) -> Snapshot:
     path = f"repos/{REPOSITORY}"
     repository = api.call("GET", path)
     if not isinstance(repository, dict) or repository.get("full_name") != REPOSITORY:
         raise SetupError("GitHub returned a different repository; refusing to continue")
     main = api.call("GET", f"{path}/branches/main", optional=True)
     master = api.call("GET", f"{path}/branches/master", optional=True)
-    for branch in (main, master):
+    dev = api.call("GET", f"{path}/branches/dev", optional=True)
+    for branch in (main, master, dev):
         if branch is not None:
             sha = branch.get("commit", {}).get("sha")
             if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{40,64}", sha):
@@ -257,21 +313,33 @@ def snapshot(api: GitHub) -> Snapshot:
                   if selected and selected["protected"] else None)
     if selected and selected["protected"] and protection is None:
         raise SetupError("branch is protected but its policy is unavailable (HTTP 404 or concurrent change); refusing to infer no protection")
+    dev_protection = (api.call("GET", f"{path}/branches/dev/protection", optional=True)
+                      if dev and dev["protected"] else None)
+    if dev and dev["protected"] and dev_protection is None:
+        raise SetupError("dev is protected but its policy is unavailable; refusing to infer no protection")
     rulesets = api.pages(f"{path}/rulesets?includes_parents=true&per_page=100")
     legacy_prs = api.pages(f"{path}/pulls?state=open&base=master&per_page=100")
     for pr in legacy_prs:
         number = pr.get("number")
         if not isinstance(number, int) or isinstance(number, bool) or number <= 0 or pr.get("base", {}).get("ref") != "master":
             raise SetupError("GitHub returned an invalid legacy pull-request identity")
-    return Snapshot(repository, main, master, protection, target, rulesets, legacy_prs)
+    comparison = None
+    master_head_prs = []
+    if delete_master and main is not None and master is not None:
+        master_head_prs = api.pages(f"{path}/pulls?state=open&head=QahNaaRlN:master&per_page=100")
+        if any(not isinstance(pr.get("number"), int) or pr.get("head", {}).get("ref") != "master"
+               or (pr.get("head", {}).get("repo") or {}).get("full_name") != REPOSITORY for pr in master_head_prs):
+            raise SetupError("GitHub returned an invalid master-head pull-request identity")
+        comparison = api.call("GET", f"{path}/compare/{main['commit']['sha']}...{master['commit']['sha']}")
+    return Snapshot(repository, main, master, dev, dev_protection, comparison, protection, target, rulesets, legacy_prs, master_head_prs)
 
 
-def refuse_weakening(state: Snapshot) -> None:
+def refuse_weakening(state: Snapshot, branch: str = "main") -> None:
     """Do not replace protections which need a human policy decision to weaken."""
     active_rulesets = [rule for rule in state.rulesets if rule.get("enforcement") != "disabled"]
     if active_rulesets:
         raise SetupError("active/inherited repository rulesets require manual review; no ruleset is modified or bypassed")
-    protection = state.protection
+    protection = state.dev_protection if branch == "dev" else state.protection
     if not protection:
         return
     existing = parse_contexts(protection)
@@ -288,12 +356,19 @@ def refuse_weakening(state: Snapshot) -> None:
         raise SetupError("existing review requirements are stronger than the solo-maintainer policy; refusing to weaken them")
     if protection.get("restrictions") is not None or enabled(protection, "lock_branch") or enabled(protection, "block_creations"):
         raise SetupError("existing push/branch restrictions require manual review; refusing to remove them")
+    if enabled(protection, "required_linear_history"):
+        raise SetupError("existing linear-history requirement is stronger; refusing to weaken it automatically for the main/dev merge-commit profile")
 
 
-def verification_issues(state: Snapshot) -> list[str]:
+def verification_issues(state: Snapshot, delete_master: bool = False) -> list[str]:
     issues = []
     if state.main is None:
         issues.append("main branch does not exist")
+    if state.dev is None:
+        issues.append("dev branch does not exist")
+    issues.extend(protection_issues(state.dev_protection, "dev"))
+    if delete_master and state.master is not None:
+        issues.append("legacy master branch still exists")
     for key, desired in REPOSITORY_SETTINGS.items():
         actual = state.repository.get(key)
         if type(actual) is not type(desired) or actual != desired:
@@ -309,7 +384,46 @@ def verification_issues(state: Snapshot) -> list[str]:
     return issues
 
 
-def plan(state: Snapshot) -> list[dict]:
+def legacy_pr_target(pr: dict) -> str:
+    head = pr.get("head", {}).get("ref", "")
+    if head == "dev":
+        if (pr.get("head", {}).get("repo") or {}).get("full_name") != REPOSITORY:
+            raise SetupError("fork dev is not the same-repository promotion branch; retarget manually")
+        return "main"
+    if head.startswith(("feat/", "fix/", "docs/", "chore/")):
+        return "dev"
+    raise SetupError("legacy pull-request head has no declared branch policy; retarget it manually")
+
+
+def require_merged_master(state: Snapshot) -> None:
+    if state.master_head_prs:
+        raise SetupError("open pull requests use master as their source branch; refusing deletion")
+    main_sha = (state.main or {}).get("commit", {}).get("sha")
+    master_sha = (state.master or {}).get("commit", {}).get("sha")
+    comparison = state.comparison
+    if (not main_sha or not master_sha or not isinstance(comparison, dict)
+            or comparison.get("status") not in ("identical", "behind")
+            or type(comparison.get("ahead_by")) is not int or comparison["ahead_by"] != 0
+            or comparison.get("base_commit", {}).get("sha") != main_sha
+            or comparison.get("merge_base_commit", {}).get("sha") != master_sha):
+        raise SetupError("master contains unmerged or unverified commits; refusing deletion")
+
+
+def require_safe_deletion(api: GitHub, state: Snapshot) -> None:
+    issues = verification_issues(state)
+    if issues:
+        raise SetupError("master deletion prerequisites are not satisfied: " + "; ".join(issues))
+    require_merged_master(state)
+    # Compare used immutable SHAs. Ensure refs still identify those commits
+    # immediately before deleting; no force operation or branch-content rewrite.
+    for branch in ("main", "master"):
+        current = api.call("GET", f"repos/{REPOSITORY}/branches/{branch}")
+        expected = getattr(state, branch)["commit"]["sha"]
+        if not isinstance(current, dict) or current.get("commit", {}).get("sha") != expected:
+            raise SetupError("branch moved after ancestry verification; refusing master deletion")
+
+
+def plan(state: Snapshot, delete_master: bool = False) -> list[dict]:
     base = f"repos/{REPOSITORY}"
     actions = []
     if any(rule.get("enforcement") != "disabled" for rule in state.rulesets):
@@ -325,19 +439,28 @@ def plan(state: Snapshot) -> list[dict]:
                if type(state.repository.get(key)) is not type(value) or state.repository.get(key) != value}
     if changes:
         actions.append({"method": "PATCH", "endpoint": base, "payload": changes})
-    needs_protection = bool(protection_issues(state.protection))
-    # Even an otherwise useful default-branch migration must not accidentally
-    # replace stronger requirements later in this same apply operation.
-    if needs_protection:
-        refuse_weakening(state)
-        actions.append({"method": "PUT", "endpoint": f"{base}/branches/main/protection", "payload": protection_payload()})
-    # Linear-history protection requires squash/rebase to be enabled first. Move
-    # the default only *after* protection succeeds, so a partial failure leaves
+    if state.dev is None:
+        source = state.main or state.master
+        if source is None:
+            raise SetupError("cannot create dev without an existing main/master commit")
+        actions.append({"method": "POST", "endpoint": f"{base}/git/refs", "payload": {"ref": "refs/heads/dev", "sha": source["commit"]["sha"]}})
+    # Preflight both branches before *any* write, so a stronger dev policy does
+    # not get discovered only after changing repository/main settings.
+    for branch, protection in (("main", state.protection), ("dev", state.dev_protection)):
+        if protection_issues(protection, branch):
+            refuse_weakening(state, branch)
+            actions.append({"method": "PUT", "endpoint": f"{base}/branches/{branch}/protection", "payload": protection_payload()})
+    # Apply the merge-commit policy before protecting both long-lived branches.
+    # Move the default only *after* protection succeeds, so a partial failure leaves
     # the previous default intact. A rename already migrates the default itself.
     if state.main is not None and default != "main":
         actions.append({"method": "PATCH", "endpoint": base, "payload": {"default_branch": "main"}})
     for pr in sorted(state.legacy_prs, key=lambda item: item["number"]):
-        actions.append({"method": "PATCH", "endpoint": f"{base}/pulls/{pr['number']}", "payload": {"base": "main"}})
+        actions.append({"method": "PATCH", "endpoint": f"{base}/pulls/{pr['number']}", "payload": {"base": legacy_pr_target(pr)}})
+    if delete_master and state.master is not None and state.main is not None:
+        require_merged_master(state)
+        actions.append({"method": LEASE_DELETE, "endpoint": GIT_REMOTE,
+                        "payload": {"ref": "refs/heads/master", "expected_old_sha": state.master["commit"]["sha"]}})
     return actions
 
 
@@ -362,34 +485,38 @@ def save_report(path: Path | None, report: dict) -> None:
 
 def execute(args: argparse.Namespace, api: GitHub | None = None) -> tuple[int, dict]:
     api = api or GitHub()
+    delete_master = args.delete_master
     report = {"repository": REPOSITORY, "mode": args.mode, "status": "reading", "completed": [], "attempted": None,
-              "legacy_master_policy": "never deleted or force-updated; renamed only when main is absent"}
+              "legacy_master_policy": "delete only after ancestry/default/protection checks" if delete_master else "preserved unless renamed into absent main",
+              "delete_master_requested": delete_master}
     try:
-        state = snapshot(api)
+        state = snapshot(api, delete_master)
         report["before"] = state.safe_report()
         if args.mode == "verify":
-            issues = verification_issues(state)
+            issues = verification_issues(state, delete_master)
             report.update(status="verified" if not issues else "mismatch", issues=issues)
             save_report(args.report, report)
             return (0 if not issues else 1), report
-        actions = plan(state)
+        actions = plan(state, delete_master)
         report.update(status="planned", planned=actions)
         save_report(args.report, report)  # Atomic snapshot/plan before any write.
         if args.mode == "dry-run":
             return 0, report
-        preserve_signatures = enabled(state.protection, "required_signatures")
+        preserve_signatures = {branch for branch, protection in (("main", state.protection), ("dev", state.dev_protection)) if enabled(protection, "required_signatures")}
         previous_action = None
         # Re-plan from fresh actual settings before every mutation. This catches
         # stronger policies added since the first snapshot and also accommodates
         # GitHub automatically updating default branch / PR bases on a rename.
         # This is conservative revalidation, not a server-side atomic transaction.
         for _ in range(1000):
-            latest = snapshot(api)
+            latest = snapshot(api, delete_master)
             report["last_observed"] = latest.safe_report()
-            if preserve_signatures and not enabled(latest.protection, "required_signatures"):
-                raise SetupError("previously required commit signatures are no longer enabled; manual review required")
-            preserve_signatures |= enabled(latest.protection, "required_signatures")
-            remaining = plan(latest)
+            for branch, protection in (("main", latest.protection), ("dev", latest.dev_protection)):
+                if branch in preserve_signatures and not enabled(protection, "required_signatures"):
+                    raise SetupError(f"previously required commit signatures on {branch} are no longer enabled; manual review required")
+                if enabled(protection, "required_signatures"):
+                    preserve_signatures.add(branch)
+            remaining = plan(latest, delete_master)
             report["remaining"] = remaining
             if not remaining:
                 break
@@ -399,26 +526,32 @@ def execute(args: argparse.Namespace, api: GitHub | None = None) -> tuple[int, d
             if action["method"] == "PATCH" and "/pulls/" in action["endpoint"]:
                 pull = api.call("GET", action["endpoint"])
                 current_base = pull.get("base", {}).get("ref") if isinstance(pull, dict) else None
-                if current_base == "main":
+                if current_base == action["payload"]["base"]:
                     # A concurrent maintainer/GitHub rename already fulfilled it.
-                    report.setdefault("skipped", []).append({"endpoint": action["endpoint"], "reason": "already targets main"})
+                    report.setdefault("skipped", []).append({"endpoint": action["endpoint"], "reason": "already targets desired branch"})
                     continue
                 if current_base != "master":
                     raise SetupError("pull request base changed since the snapshot; refusing to override another target")
+            if action["method"] == LEASE_DELETE:
+                require_safe_deletion(api, latest)
             report.update(status="applying", attempted=action)
             save_report(args.report, report)
-            api.call(action["method"], action["endpoint"], action["payload"])
+            if action["method"] == LEASE_DELETE:
+                api.delete_master_with_lease(action["payload"]["expected_old_sha"])
+            else:
+                api.call(action["method"], action["endpoint"], action["payload"])
             report["completed"].append(action)
             previous_action = action
             report["attempted"] = None
             save_report(args.report, report)
         else:
             raise SetupError("repository configuration keeps changing; stopped after 1000 operations")
-        after = snapshot(api)
+        after = snapshot(api, delete_master)
         report["after"] = after.safe_report()
-        issues = verification_issues(after)
-        if preserve_signatures and not enabled(after.protection, "required_signatures"):
-            issues.append("previously required commit signatures are no longer enabled; manual review required")
+        issues = verification_issues(after, delete_master)
+        for branch, protection in (("main", after.protection), ("dev", after.dev_protection)):
+            if branch in preserve_signatures and not enabled(protection, "required_signatures"):
+                issues.append(f"previously required commit signatures on {branch} are no longer enabled; manual review required")
         report.update(status="verified" if not issues else "mismatch", issues=issues)
         save_report(args.report, report)
         return (0 if not issues else 1), report
@@ -438,6 +571,7 @@ def parser() -> argparse.ArgumentParser:
     modes.add_argument("--apply", dest="mode", action="store_const", const="apply", help="apply the plan, stop on the first failure, then verify")
     modes.add_argument("--verify", dest="mode", action="store_const", const="verify", help="read settings and fail on any target-policy mismatch")
     result.set_defaults(mode="dry-run")
+    result.add_argument("--delete-master", action="store_true", help="also remove legacy master, last, only after ancestry and protection checks")
     result.add_argument("--repo", choices=[REPOSITORY], default=REPOSITORY, help="fixed safety target")
     result.add_argument("--report", type=Path, help="atomically write a sanitized JSON report; no credentials or raw gh responses")
     return result
