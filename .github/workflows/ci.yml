@@ -2,9 +2,13 @@ name: CI
 
 on:
   push:
-    branches: [master, main]
+    branches: [main]
   pull_request:
   workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -30,6 +34,19 @@ jobs:
         run: cargo clippy --locked --all-targets --all-features -- -D warnings
       - name: Portable host tests (native isolation is a separate Linux gate)
         run: cargo test --locked --all-features
+      - name: Repository setup tests
+        run: python -m unittest discover -s tests -p "test_repository_setup.py" -v
+      - name: Windows clone script validation
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PWD 'scripts/clone-windows.ps1'), [ref]$tokens, [ref]$errors) | Out-Null
+          if ($errors.Count -gt 0) { throw ($errors | Out-String) }
+          $destination = Join-Path $env:RUNNER_TEMP 'petri-bootstrap-dry-run'
+          & ./scripts/clone-windows.ps1 -Destination $destination -WhatIf
+          if (Test-Path -LiteralPath $destination) { throw 'WhatIf created a directory' }
       - name: Release binary
         run: cargo build --locked --release
 

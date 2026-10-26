@@ -9,6 +9,7 @@ Petri сохраняет независимый Git-снимок исходно�
 - [Все найденные нюансы и решения — 22 ADR](docs/decisions.md)
 - [Исходные документы v0.1/v0.2](docs/sources/README.md)
 - [Проверки и ограничения](docs/status.md)
+- [Ветки, защита и клонирование на Windows](docs/repository-governance.md)
 - [Внутреннее ревью безопасности](docs/security-review.md)
 
 ## Сборка
