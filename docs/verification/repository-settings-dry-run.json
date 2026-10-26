@@ -163,5 +163,8 @@
         "expected_old_sha": "f7a2af7916ac5db10fa4eb9330ed8336c5b933b7"
       }
     }
-  ]
+  ],
+  "historical": true,
+  "superseded_by": "repository-settings.json",
+  "note": "Plan captured before the authenticated browser applied the settings and the conditional Git deletion removed master."
 }

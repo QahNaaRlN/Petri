@@ -47,6 +47,8 @@ class FakeGh:
         self.master_ahead = 0
         self.master_head_prs = []
         self.before_lease_push = None
+        self.deleted_master = None
+        self.master_stale_reads = 0
         self.rulesets = []
         self.prs = [] if configured else [{"number": 1, "base": {"ref": "master"}, "head": {"ref": "feat/demo"}}]
         self.calls = []
@@ -66,6 +68,7 @@ class FakeGh:
                 expected = lease.rsplit(":", 1)[1]
                 if self.mutations == self.fail_mutation or self.master["commit"]["sha"] != expected:
                     return subprocess.CompletedProcess(args, 1, "", "secret-token-must-not-be-logged; stale lease")
+                self.deleted_master = copy.deepcopy(self.master)
                 self.master = None
             return subprocess.CompletedProcess(args, 0, "", "")
         if args[:3] != ["gh", "api", "--method"]:
@@ -103,6 +106,9 @@ class FakeGh:
             response = self.main
         elif endpoint == f"{base}/branches/master":
             response = self.master
+            if response is None and self.deleted_master is not None and self.master_stale_reads:
+                self.master_stale_reads -= 1
+                response = self.deleted_master
         elif endpoint == f"{base}/branches/dev":
             response = self.dev
         elif endpoint == f"{base}/branches/dev/protection":
@@ -483,6 +489,7 @@ class RepositorySetupTests(unittest.TestCase):
         self.assertTrue(setup.REPOSITORY_SETTINGS["allow_merge_commit"])
         self.assertFalse(setup.REPOSITORY_SETTINGS["allow_squash_merge"])
         self.assertFalse(setup.REPOSITORY_SETTINGS["allow_rebase_merge"])
+        self.assertFalse(setup.REPOSITORY_SETTINGS["allow_auto_merge"])
         self.assertFalse(setup.protection_payload()["required_linear_history"])
         gh = FakeGh(configured=True)
         gh.dev_protection["required_linear_history"]["enabled"] = True
@@ -490,6 +497,54 @@ class RepositorySetupTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("linear-history", report["error"])
         self.assertEqual(gh.mutations, 0)
+
+    def test_verify_detects_and_apply_disables_unintended_auto_merge(self):
+        gh = FakeGh(configured=True)
+        gh.repo["allow_auto_merge"] = True
+        code, report = self.run_setup(gh, "--verify")
+        self.assertEqual(code, 1)
+        self.assertTrue(any("allow_auto_merge" in issue for issue in report["issues"]))
+        self.assertEqual(gh.mutations, 0)
+        code, report = self.run_setup(gh, "--apply")
+        self.assertEqual((code, report["status"]), (0, "verified"))
+        self.assertFalse(gh.repo["allow_auto_merge"])
+        self.assertEqual(report["completed"][0]["payload"], {"allow_auto_merge": False})
+
+    def test_successful_lease_waits_for_one_or_two_stale_reads_without_repeating_write(self):
+        for stale_reads in (1, 2):
+            with self.subTest(stale_reads=stale_reads):
+                gh = FakeGh(configured=True)
+                gh.master_stale_reads = stale_reads
+                with patch.object(setup.time, "sleep") as sleep:
+                    code, report = self.run_setup(gh, "--apply", "--delete-master")
+                self.assertEqual((code, report["status"]), (0, "verified"))
+                self.assertEqual(gh.mutations, 1)
+                self.assertEqual(report["post_delete_verification"], {
+                    "lease_succeeded": True, "reads": stale_reads + 1, "api_observed_absence": True,
+                })
+                self.assertEqual(sleep.call_count, stale_reads)
+                pushes = [args for args, _ in gh.calls if args[0] == "git" and "push" in args]
+                self.assertEqual(len(pushes), 1)
+
+    def test_exhausted_post_delete_visibility_reports_pending_and_never_repeats_lease(self):
+        gh = FakeGh(configured=True)
+        gh.master_stale_reads = 100
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "report.json"
+            with patch.object(setup.time, "sleep") as sleep:
+                code, report = self.run_setup(gh, "--apply", "--delete-master", "--report", str(path))
+            self.assertEqual(json.loads(path.read_text()), report)
+        self.assertEqual((code, report["status"]), (1, "pending_verification"))
+        self.assertEqual(len(report["completed"]), 1)
+        self.assertEqual(report["completed"][0]["method"], setup.LEASE_DELETE)
+        self.assertEqual(gh.mutations, 1)
+        self.assertIsNone(gh.master)  # The real write succeeded; API remains stale.
+        self.assertEqual(report["post_delete_verification"], {
+            "lease_succeeded": True, "reads": 6, "api_observed_absence": False,
+        })
+        self.assertEqual(sleep.call_count, 5)
+        self.assertNotIn("error", report)
+        self.assertIn("no second deletion", report["issues"][0])
 
     def test_delete_master_flag_is_plan_only_without_apply(self):
         gh = FakeGh()

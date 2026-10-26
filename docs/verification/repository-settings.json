@@ -2,59 +2,138 @@
   "observed_date": "2026-10-26",
   "timezone": "Asia/Yekaterinburg",
   "repository": "QahNaaRlN/Petri",
-  "main": {
-    "exists": true,
-    "sha": "f7a2af7916ac5db10fa4eb9330ed8336c5b933b7",
-    "protected": false
+  "status": "applied_and_verified",
+  "repository_settings": {
+    "default_branch": "main",
+    "allow_merge_commit": true,
+    "allow_squash_merge": false,
+    "allow_rebase_merge": false,
+    "allow_update_branch": true,
+    "delete_branch_on_merge": true,
+    "allow_auto_merge": false
   },
-  "default_branch": "master",
+  "branches": {
+    "main": {
+      "exists": true,
+      "sha": "f7a2af7916ac5db10fa4eb9330ed8336c5b933b7",
+      "protected": true,
+      "public_api_protection": {
+        "enabled": true,
+        "required_status_checks": {
+          "enforcement_level": "everyone",
+          "contexts": [
+            "Build and portable tests (ubuntu-24.04)",
+            "Build and portable tests (macos-14)",
+            "Build and portable tests (windows-2022)",
+            "Native Linux isolation (required; no skipped success)",
+            "Dependency vulnerability audit"
+          ],
+          "checks": [
+            {
+              "context": "Build and portable tests (ubuntu-24.04)",
+              "app_id": 15368
+            },
+            {
+              "context": "Build and portable tests (macos-14)",
+              "app_id": 15368
+            },
+            {
+              "context": "Build and portable tests (windows-2022)",
+              "app_id": 15368
+            },
+            {
+              "context": "Native Linux isolation (required; no skipped success)",
+              "app_id": 15368
+            },
+            {
+              "context": "Dependency vulnerability audit",
+              "app_id": 15368
+            }
+          ]
+        }
+      },
+      "rule_url": "https://github.com/QahNaaRlN/Petri/settings/branch_protection_rules/85363926"
+    },
+    "dev": {
+      "exists": true,
+      "sha": "f7a2af7916ac5db10fa4eb9330ed8336c5b933b7",
+      "protected": true,
+      "public_api_protection": {
+        "enabled": true,
+        "required_status_checks": {
+          "enforcement_level": "everyone",
+          "contexts": [
+            "Build and portable tests (ubuntu-24.04)",
+            "Build and portable tests (macos-14)",
+            "Build and portable tests (windows-2022)",
+            "Native Linux isolation (required; no skipped success)",
+            "Dependency vulnerability audit"
+          ],
+          "checks": [
+            {
+              "context": "Build and portable tests (ubuntu-24.04)",
+              "app_id": 15368
+            },
+            {
+              "context": "Build and portable tests (macos-14)",
+              "app_id": 15368
+            },
+            {
+              "context": "Build and portable tests (windows-2022)",
+              "app_id": 15368
+            },
+            {
+              "context": "Native Linux isolation (required; no skipped success)",
+              "app_id": 15368
+            },
+            {
+              "context": "Dependency vulnerability audit",
+              "app_id": 15368
+            }
+          ]
+        }
+      },
+      "rule_url": "https://github.com/QahNaaRlN/Petri/settings/branch_protection_rules/85364237"
+    }
+  },
+  "master": {
+    "exists": false,
+    "deleted_with": "atomic Git expected-old-SHA lease",
+    "expected_old_sha": "f7a2af7916ac5db10fa4eb9330ed8336c5b933b7",
+    "all_commits_preserved_in": "main",
+    "verified_by": [
+      "GitHub API branch list excludes master",
+      "git ls-remote --exit-code refs/heads/master returned 2 with no match"
+    ],
+    "initial_immediate_api_postcheck_was_stale": true
+  },
+  "browser_readback_policy_for_both": {
+    "required_pull_request": true,
+    "required_approvals": 0,
+    "dismiss_stale_reviews": true,
+    "code_owner_reviews": false,
+    "last_push_approval": false,
+    "strict_status_checks": true,
+    "conversation_resolution": true,
+    "enforce_admins": true,
+    "linear_history": false,
+    "allow_force_pushes": false,
+    "allow_deletions": false,
+    "lock_branch": false,
+    "required_signatures": false,
+    "required_deployments": false
+  },
   "pull_request_1": {
     "base": "dev",
     "head": "feat/petri-v0.3",
     "draft": true,
     "merged": false
   },
-  "blocked_actions": [
-    {
-      "method": "POST",
-      "endpoint": "repos/QahNaaRlN/Petri/branches/master/rename",
-      "status": 403
-    },
-    {
-      "method": "PATCH",
-      "endpoint": "repos/QahNaaRlN/Petri",
-      "status": 403
-    },
-    {
-      "method": "PUT",
-      "endpoint": "repos/QahNaaRlN/Petri/branches/main/protection",
-      "status": 403
-    }
-  ],
-  "reason": "GitHub Resource not accessible by integration: account admin status does not grant Administration permissions to the connected integration.",
+  "administration_method": "Authenticated GitHub web UI; independently verified with public API metadata. Integration Administration API scope remains limited.",
+  "branch_model": "working branches -> dev -> main; same-repository main -> dev sync",
   "windows_clone": {
     "requested_path": "D:\\PersonalProjects\\Petri",
     "performed": false,
-    "reason": "Cloud Linux executor has no access to the local Windows filesystem."
-  },
-  "no_merge_or_branch_deletion_performed": true,
-  "dev": {
-    "exists": true,
-    "sha": "f7a2af7916ac5db10fa4eb9330ed8336c5b933b7",
-    "protected": false
-  },
-  "branch_model": "working branches -> dev -> main; same-repository main -> dev synchronization",
-  "browser": {
-    "native_computer_use_available": false,
-    "browser_control_available": false,
-    "alternative": "TinyFish suggested; connection not confirmed"
-  },
-  "latest_apply": {
-    "status": "failed",
-    "completed_writes": 0,
-    "method": "PATCH",
-    "endpoint": "repos/QahNaaRlN/Petri",
-    "http_status": 403
-  },
-  "master_deletion_performed": false
+    "reason": "Cloud executor has no access to the local Windows filesystem; user authorized cloud work."
+  }
 }

@@ -21,6 +21,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 from typing import Any
 
 REPOSITORY = "QahNaaRlN/Petri"
@@ -39,6 +40,7 @@ REPOSITORY_SETTINGS = {
     "allow_squash_merge": False,
     "allow_merge_commit": True,
     "allow_rebase_merge": False,
+    "allow_auto_merge": False,
     "delete_branch_on_merge": True,
     "allow_update_branch": True,
 }
@@ -483,6 +485,17 @@ def save_report(path: Path | None, report: dict) -> None:
             temp_path.unlink(missing_ok=True)
 
 
+def wait_for_master_absence(api: GitHub) -> int | None:
+    """Read-only propagation check after a successful lease; never retry writes."""
+    for attempt in range(6):
+        branch = api.call("GET", f"repos/{REPOSITORY}/branches/master", optional=True)
+        if branch is None:
+            return attempt + 1
+        if attempt < 5:
+            time.sleep(0.5)
+    return None
+
+
 def execute(args: argparse.Namespace, api: GitHub | None = None) -> tuple[int, dict]:
     api = api or GitHub()
     delete_master = args.delete_master
@@ -504,6 +517,7 @@ def execute(args: argparse.Namespace, api: GitHub | None = None) -> tuple[int, d
             return 0, report
         preserve_signatures = {branch for branch, protection in (("main", state.protection), ("dev", state.dev_protection)) if enabled(protection, "required_signatures")}
         previous_action = None
+        lease_delete_completed = False
         # Re-plan from fresh actual settings before every mutation. This catches
         # stronger policies added since the first snapshot and also accommodates
         # GitHub automatically updating default branch / PR bases on a rename.
@@ -544,6 +558,22 @@ def execute(args: argparse.Namespace, api: GitHub | None = None) -> tuple[int, d
             previous_action = action
             report["attempted"] = None
             save_report(args.report, report)
+            if action["method"] == LEASE_DELETE:
+                lease_delete_completed = True
+                observed_after = wait_for_master_absence(api)
+                report["post_delete_verification"] = {
+                    "lease_succeeded": True, "reads": observed_after or 6,
+                    "api_observed_absence": observed_after is not None,
+                }
+                if observed_after is None:
+                    report.update(status="pending_verification", issues=[
+                        "Conditional deletion completed, but the API still reports master after six read-only checks; no second deletion was attempted. Re-run --verify --delete-master later."
+                    ])
+                    save_report(args.report, report)
+                    return 1, report
+                # Deletion is the final mutation. Do not re-plan it from a stale
+                # branch response; finish with a read-only verification instead.
+                break
         else:
             raise SetupError("repository configuration keeps changing; stopped after 1000 operations")
         after = snapshot(api, delete_master)
@@ -552,7 +582,12 @@ def execute(args: argparse.Namespace, api: GitHub | None = None) -> tuple[int, d
         for branch, protection in (("main", after.protection), ("dev", after.dev_protection)):
             if branch in preserve_signatures and not enabled(protection, "required_signatures"):
                 issues.append(f"previously required commit signatures on {branch} are no longer enabled; manual review required")
-        report.update(status="verified" if not issues else "mismatch", issues=issues)
+        if lease_delete_completed and after.master is not None:
+            issues.append("Conditional deletion completed but API visibility is inconsistent; no second deletion was attempted. Re-run --verify --delete-master later.")
+            status = "pending_verification"
+        else:
+            status = "verified" if not issues else "mismatch"
+        report.update(status=status, issues=issues)
         save_report(args.report, report)
         return (0 if not issues else 1), report
     except (SetupError, OSError) as exc:
@@ -582,7 +617,10 @@ def main(argv: list[str] | None = None) -> int:
     code, report = execute(args)
     print(json.dumps(report, ensure_ascii=False, indent=2))
     if code:
-        print(report.get("error") or "Repository settings do not match the target policy; inspect issues in the report.", file=sys.stderr)
+        message = report.get("error")
+        if report["status"] == "pending_verification":
+            message = report["issues"][-1]
+        print(message or "Repository settings do not match the target policy; inspect issues in the report.", file=sys.stderr)
     return code
 
 
