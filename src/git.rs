@@ -21,8 +21,79 @@ struct Entry {
 
 type Files = BTreeMap<String, Entry>;
 
+/// The first Windows profile deliberately supports an ASCII NTFS subset.
+/// Validate Git names before materialization, independently of the build host.
+/// Unicode names need a separately qualified Windows case-mapping contract.
+pub fn validate_windows_relative_path(path: &str) -> Result<()> {
+    ensure!(
+        !path.is_empty() && path.is_ascii() && !path.contains('\\'),
+        "unsupported Windows snapshot path: {path}"
+    );
+    let parts: Vec<_> = path.split('/').collect();
+    ensure!(
+        parts.len() <= 128,
+        "Windows snapshot nesting limit exceeded"
+    );
+    for part in parts {
+        ensure!(
+            !part.is_empty()
+                && part != "."
+                && part != ".."
+                && part.len() <= 255
+                && !part.ends_with(['.', ' '])
+                && !part.bytes().any(|c| c < 32 || c == 127)
+                && !part.contains([':', '<', '>', '"', '|', '?', '*', '~']),
+            "unsafe Windows snapshot component: {part}"
+        );
+        let stem = part
+            .split('.')
+            .next()
+            .unwrap_or_default()
+            .trim_end_matches(' ')
+            .to_ascii_uppercase();
+        let numbered_device = ["COM", "LPT"].iter().any(|prefix| {
+            stem.strip_prefix(prefix)
+                .is_some_and(|n| n.len() == 1 && matches!(n.as_bytes()[0], b'1'..=b'9'))
+        });
+        ensure!(
+            !numbered_device
+                && !["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$", "CLOCK$"]
+                    .contains(&stem.as_str()),
+            "reserved Windows device name: {part}"
+        );
+    }
+    Ok(())
+}
+
+#[cfg(any(windows, test))]
+fn validate_windows_paths<'a>(paths: impl IntoIterator<Item = &'a str>) -> Result<()> {
+    let mut aliases = BTreeMap::<String, String>::new();
+    for path in paths {
+        validate_windows_relative_path(path)?;
+        let mut prefix = String::new();
+        for part in path.split('/') {
+            if !prefix.is_empty() {
+                prefix.push('/');
+            }
+            prefix.push_str(part);
+            let folded = prefix.to_ascii_lowercase();
+            if let Some(previous) = aliases.insert(folded, prefix.clone()) {
+                ensure!(
+                    previous == prefix,
+                    "Windows case-colliding paths: {previous} / {prefix}"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 fn forbidden(path: &str) -> bool {
     path.split('/').any(|part| {
+        #[cfg(windows)]
+        let normalized = part.to_ascii_lowercase();
+        #[cfg(windows)]
+        let part = normalized.as_str();
         part.eq_ignore_ascii_case(".git")
             || part == ".ssh"
             || part == "docker.sock"
@@ -32,6 +103,8 @@ fn forbidden(path: &str) -> bool {
 }
 
 fn valid_relative(path: &str) -> Result<()> {
+    #[cfg(windows)]
+    validate_windows_relative_path(path)?;
     ensure!(!path.is_empty() && !path.contains('\\'), "unsafe Git path");
     ensure!(
         Path::new(path).components().count() <= 128,
@@ -186,9 +259,26 @@ fn build_tree(repo: &Repository, files: &Files) -> Result<Oid> {
 }
 
 fn lab_repo(workspace: &Path) -> Result<Repository> {
+    ensure!(
+        workspace
+            .file_name()
+            .is_some_and(|name| name == "workspace"),
+        "expected a bound laboratory workspace"
+    );
     let parent = workspace.parent().context("workspace has no parent")?;
-    let repo = Repository::open_bare(parent.join("git"))
+    let metadata = parent.join("git");
+    // Never discover a repository from the workload-controlled .git pointer.
+    // These sibling control paths belong to the controller's private store.
+    let metadata_type = fs::symlink_metadata(&metadata)?;
+    ensure!(
+        metadata_type.is_dir() && !metadata_type.file_type().is_symlink(),
+        "lab Git metadata must be an independent real directory"
+    );
+    #[cfg(windows)]
+    let _metadata_guard = pin_windows_directory(&metadata)?;
+    let repo = Repository::open_bare(&metadata)
         .context("lab Git metadata is missing; source repositories must not be passed here")?;
+    ensure!(repo.is_bare(), "lab Git metadata must be bare");
     Ok(repo)
 }
 
@@ -224,6 +314,14 @@ pub fn create_workspace(source: &Path, destination: &Path, branch: &str) -> Resu
         .into_iter()
         .filter(|(path, _)| !forbidden(path))
         .collect();
+    #[cfg(windows)]
+    {
+        validate_windows_paths(files.keys().map(String::as_str))?;
+        ensure!(
+            files.values().all(|entry| entry.mode != 0o120000),
+            "Windows profile does not export symlinks"
+        );
+    }
     validate_links(&src, &files)?;
     let parent = destination.parent().context("workspace has no parent")?;
     fs::create_dir_all(parent)?;
@@ -308,7 +406,9 @@ fn set_executable(_path: &Path, _executable: bool) -> Result<()> {
     Ok(())
 }
 
-fn read_regular(path: &Path) -> Result<Vec<u8>> {
+/// Open the final regular file without following links, and keep that exact
+/// object pinned for the read. Callers must also pin/own its parent chain.
+pub fn open_regular_no_links(path: &Path) -> Result<fs::File> {
     let mut options = fs::OpenOptions::new();
     options.read(true);
     #[cfg(unix)]
@@ -316,12 +416,156 @@ fn read_regular(path: &Path) -> Result<Vec<u8>> {
         use std::os::unix::fs::OpenOptionsExt;
         options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
     }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
+        };
+        // No WRITE/DELETE sharing: a stopped workload cannot leave a racing
+        // writable handle, and this handle cannot be replaced during collection.
+        options
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+            .share_mode(FILE_SHARE_READ);
+    }
     let file = options.open(path)?;
     ensure!(
         file.metadata()?.is_file(),
         "not a regular file: {}",
         path.display()
     );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        ensure!(
+            file.metadata()?.nlink() == 1,
+            "hardlinked snapshot file denied: {}",
+            path.display()
+        );
+    }
+    #[cfg(windows)]
+    {
+        check_windows_handle(&file, false)?;
+        reject_windows_streams(path)?;
+    }
+    Ok(file)
+}
+
+#[cfg(windows)]
+fn check_windows_handle(file: &fs::File, directory: bool) -> Result<()> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_DIRECTORY,
+        FILE_ATTRIBUTE_REPARSE_POINT,
+    };
+    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    ensure!(
+        unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } != 0,
+        "cannot inspect Windows snapshot object: {}",
+        std::io::Error::last_os_error()
+    );
+    ensure!(
+        info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT == 0,
+        "Windows reparse object denied"
+    );
+    ensure!(
+        (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0) == directory,
+        "Windows snapshot object type changed"
+    );
+    if !directory {
+        ensure!(
+            info.nNumberOfLinks == 1,
+            "Windows hardlinked snapshot file denied"
+        );
+    }
+    // Identity is obtained from this handle (volume serial + file index), and
+    // all reads use this same handle, never a later path-based reopen.
+    Ok(())
+}
+
+#[cfg(windows)]
+fn reject_windows_streams(path: &Path) -> Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::{ERROR_HANDLE_EOF, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Storage::FileSystem::{
+        FindClose, FindFirstStreamW, FindNextStreamW, FindStreamInfoStandard,
+        WIN32_FIND_STREAM_DATA,
+    };
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    ensure!(
+        !wide[..wide.len() - 1].contains(&0),
+        "NUL in Windows object path"
+    );
+    let mut stream: WIN32_FIND_STREAM_DATA = unsafe { std::mem::zeroed() };
+    let handle = unsafe {
+        FindFirstStreamW(
+            wide.as_ptr(),
+            FindStreamInfoStandard,
+            (&mut stream as *mut WIN32_FIND_STREAM_DATA).cast(),
+            0,
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        let error = std::io::Error::last_os_error();
+        // Directories may have no unnamed data stream.
+        ensure!(
+            error.raw_os_error() == Some(ERROR_HANDLE_EOF as i32),
+            "cannot inspect NTFS streams: {error}"
+        );
+        return Ok(());
+    }
+    struct Streams(windows_sys::Win32::Foundation::HANDLE);
+    impl Drop for Streams {
+        fn drop(&mut self) {
+            unsafe {
+                FindClose(self.0);
+            }
+        }
+    }
+    let _guard = Streams(handle);
+    loop {
+        let end = stream
+            .cStreamName
+            .iter()
+            .position(|c| *c == 0)
+            .context("invalid NTFS stream name")?;
+        let name = String::from_utf16(&stream.cStreamName[..end])?;
+        ensure!(name == "::$DATA", "alternate NTFS data stream denied");
+        if unsafe { FindNextStreamW(handle, (&mut stream as *mut WIN32_FIND_STREAM_DATA).cast()) }
+            == 0
+        {
+            let error = std::io::Error::last_os_error();
+            ensure!(
+                error.raw_os_error() == Some(ERROR_HANDLE_EOF as i32),
+                "cannot enumerate NTFS streams: {error}"
+            );
+            break;
+        }
+    }
+    Ok(())
+}
+
+/// Hold this handle while opening children. OPEN_REPARSE_POINT checks the
+/// object itself and withholding WRITE/DELETE sharing prevents replacement.
+#[cfg(windows)]
+pub fn pin_windows_directory(path: &Path) -> Result<fs::File> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES,
+        FILE_SHARE_READ,
+    };
+    let file = fs::OpenOptions::new()
+        .access_mode(FILE_READ_ATTRIBUTES)
+        .share_mode(FILE_SHARE_READ)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)?;
+    check_windows_handle(&file, true)?;
+    reject_windows_streams(path)?;
+    Ok(file)
+}
+
+fn read_regular(path: &Path) -> Result<Vec<u8>> {
+    let file = open_regular_no_links(path)?;
     // ADR-004: bounded host-side snapshots prevent an agent-created file from
     // exhausting the broker's memory. A caller can archive large data separately.
     const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
@@ -340,7 +584,19 @@ fn read_regular(path: &Path) -> Result<Vec<u8>> {
 }
 
 fn snapshot(repo: &Repository, workspace: &Path) -> Result<Files> {
-    fn walk(repo: &Repository, root: &Path, relative: &Path, out: &mut Files) -> Result<()> {
+    fn walk(
+        repo: &Repository,
+        root: &Path,
+        relative: &Path,
+        out: &mut Files,
+        _baseline: &Files,
+    ) -> Result<()> {
+        ensure!(
+            relative.components().count() <= 128,
+            "snapshot nesting limit exceeded"
+        );
+        #[cfg(windows)]
+        let _directory_guard = pin_windows_directory(&root.join(relative))?;
         for entry in fs::read_dir(root.join(relative))? {
             let entry = entry?;
             let path = relative.join(entry.file_name());
@@ -361,7 +617,7 @@ fn snapshot(repo: &Repository, workspace: &Path) -> Result<Files> {
             ensure!(!forbidden(&name), "PolicyDenied: protected path {name}");
             let meta = fs::symlink_metadata(entry.path())?;
             if meta.is_dir() {
-                walk(repo, root, &path, out)?;
+                walk(repo, root, &path, out, _baseline)?;
             } else {
                 let (bytes, mode) = if meta.file_type().is_symlink() {
                     let target = fs::read_link(entry.path())?;
@@ -382,7 +638,13 @@ fn snapshot(repo: &Repository, workspace: &Path) -> Result<Files> {
                         meta.permissions().mode() & 0o111 != 0
                     };
                     #[cfg(not(unix))]
-                    let executable = false;
+                    // NTFS does not represent the Git executable bit. Preserve
+                    // the declared baseline mode for existing names; an explicit
+                    // mode-edit API would be a separate operation. New files
+                    // receive 100644 instead of inventing an executable bit.
+                    let executable = _baseline
+                        .get(&name)
+                        .is_some_and(|entry| entry.mode == 0o100755);
                     (
                         read_regular(&entry.path())?,
                         if executable { 0o100755 } else { 0o100644 },
@@ -400,8 +662,19 @@ fn snapshot(repo: &Repository, workspace: &Path) -> Result<Files> {
         }
         Ok(())
     }
+    #[cfg(windows)]
+    let baseline = {
+        let oid: Oid = String::from_utf8(read_regular(&repo.path().join("petri-baseline"))?)?
+            .trim()
+            .parse()?;
+        files_at(repo, oid)?
+    };
+    #[cfg(not(windows))]
+    let baseline = Files::new();
     let mut files = Files::new();
-    walk(repo, workspace, Path::new(""), &mut files)?;
+    walk(repo, workspace, Path::new(""), &mut files, &baseline)?;
+    #[cfg(windows)]
+    validate_windows_paths(files.keys().map(String::as_str))?;
     validate_links(repo, &files)?;
     Ok(files)
 }
@@ -411,7 +684,7 @@ fn snapshot(repo: &Repository, workspace: &Path) -> Result<Files> {
 /// The lab must be stopped before calling this operation.
 pub fn diff(workspace: &Path) -> Result<String> {
     let repo = lab_repo(workspace)?;
-    let baseline: Oid = fs::read_to_string(repo.path().join("petri-baseline"))?
+    let baseline: Oid = String::from_utf8(read_regular(&repo.path().join("petri-baseline"))?)?
         .trim()
         .parse()?;
     let old = repo.find_commit(baseline)?.tree()?;
@@ -450,12 +723,12 @@ pub fn merge(source: &Path, workspace: &Path, base: &str) -> Result<String> {
         "source HEAD changed; refusing stale merge"
     );
     let lab = lab_repo(workspace)?;
-    let recorded = fs::read_to_string(lab.path().join("petri-source-head"))?;
+    let recorded = String::from_utf8(read_regular(&lab.path().join("petri-source-head"))?)?;
     ensure!(
         recorded.trim() == base,
         "source base does not match lab provenance"
     );
-    let baseline_oid: Oid = fs::read_to_string(lab.path().join("petri-baseline"))?
+    let baseline_oid: Oid = String::from_utf8(read_regular(&lab.path().join("petri-baseline"))?)?
         .trim()
         .parse()?;
     let baseline = files_at(&lab, baseline_oid)?;
@@ -512,6 +785,121 @@ pub fn merge(source: &Path, workspace: &Path, base: &str) -> Result<String> {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn windows_export_names_reject_aliases_devices_streams_and_collisions() {
+        for name in [
+            "file:secret",
+            "C:/outside",
+            "a\\b",
+            "/root",
+            "a//b",
+            "a/../b",
+            "file.",
+            "file ",
+            "CON",
+            "con.txt",
+            "con .txt",
+            "nul.log",
+            "COM1.py",
+            "lpt9",
+            "CONOUT$",
+            "CLOCK$",
+            "a~1.txt",
+            "a?b",
+            "a*b",
+            "a|b",
+            "a<b",
+            "a\u{7f}",
+            "é.py",
+        ] {
+            assert!(
+                validate_windows_relative_path(name).is_err(),
+                "accepted {name}"
+            );
+        }
+        assert!(validate_windows_paths(["Dir/file.py", "dir/other.py"]).is_err());
+        assert!(validate_windows_paths(["file.py", "FILE.py"]).is_err());
+        assert!(validate_windows_paths(["Dir/file.py", "Dir/other.py", "other/COM10.py"]).is_ok());
+    }
+
+    #[test]
+    fn collector_rejects_hardlinked_file_instead_of_importing_host_bytes() {
+        let tmp = TempDir::new().unwrap();
+        let src = source(&tmp.path().join("source"));
+        let workspace = tmp.path().join("lab/workspace");
+        create_workspace(src.workdir().unwrap(), &workspace, "petri/test").unwrap();
+        let canary = tmp.path().join("host-canary");
+        fs::write(&canary, "outside-only").unwrap();
+        fs::hard_link(&canary, workspace.join("leak")).unwrap();
+        assert!(diff(&workspace)
+            .unwrap_err()
+            .to_string()
+            .contains("hardlink"));
+        assert_eq!(fs::read_to_string(canary).unwrap(), "outside-only");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn collector_rejects_alternate_streams() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("ordinary");
+        fs::write(&file, "ordinary").unwrap();
+        fs::write(tmp.path().join("ordinary:hidden"), "not exported").unwrap();
+        assert!(open_regular_no_links(&file)
+            .unwrap_err()
+            .to_string()
+            .contains("alternate NTFS"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_snapshot_preserves_declared_executable_mode() {
+        let tmp = TempDir::new().unwrap();
+        let src = source(&tmp.path().join("source"));
+        let mut index = src.index().unwrap();
+        let mut executable = index.get_path(Path::new("hello.txt"), 0).unwrap();
+        executable.mode = 0o100755;
+        index.add(&executable).unwrap();
+        let tree = src.find_tree(index.write_tree().unwrap()).unwrap();
+        let parent = src.head().unwrap().peel_to_commit().unwrap();
+        let sig = Signature::now("Test", "test@example.invalid").unwrap();
+        src.commit(
+            Some("HEAD"),
+            &sig,
+            &sig,
+            "declare executable",
+            &tree,
+            &[&parent],
+        )
+        .unwrap();
+        let workspace = tmp.path().join("lab/workspace");
+        create_workspace(src.workdir().unwrap(), &workspace, "petri/test").unwrap();
+        assert!(diff(&workspace).unwrap().is_empty());
+        fs::write(workspace.join("hello.txt"), "changed executable").unwrap();
+        fs::write(workspace.join("new.txt"), "new ordinary file").unwrap();
+        let repo = lab_repo(&workspace).unwrap();
+        let files = snapshot(&repo, &workspace).unwrap();
+        assert_eq!(files["hello.txt"].mode, 0o100755);
+        assert_eq!(files["new.txt"].mode, 0o100644);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn collector_refuses_linked_control_metadata() {
+        let tmp = TempDir::new().unwrap();
+        let src = source(&tmp.path().join("source"));
+        let workspace = tmp.path().join("lab/workspace");
+        create_workspace(src.workdir().unwrap(), &workspace, "petri/test").unwrap();
+        let metadata = workspace.parent().unwrap().join("git");
+        let original = workspace.parent().unwrap().join("original-git");
+        fs::rename(&metadata, &original).unwrap();
+        std::os::unix::fs::symlink(&original, &metadata).unwrap();
+        assert!(diff(&workspace)
+            .unwrap_err()
+            .to_string()
+            .contains("independent real directory"));
+    }
 
     fn source(root: &Path) -> Repository {
         let repo = Repository::init(root).unwrap();

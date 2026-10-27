@@ -43,3 +43,8 @@ sha256sum -c SHA256SUMS
 ```
 
 Эти хеши проверяют сохранённые копии, а не авторство или подпись исходных документов.
+
+
+## Windows native candidate
+
+`cargo test` на Linux/macOS проверяет переносимую логику и явный отказ Windows namespace. Cross-compile Windows проверяет типы и linking; это не запуск LPAC. Реальная suite использует [отдельный qualification harness](../scripts/qualify-windows.py) и требует обычный Windows 11 24H2 x64 аккаунт, доверенный portable CPython 3.12 и независимый manifest. Точная команда и ограничения приведены в [руководстве кандидата](windows-native-candidate.md). Ignored/skipped не считаются успехом изоляции. Manual workflow не запускается автоматически на произвольном self-hosted runner.
