@@ -64,7 +64,7 @@ read-only inventory не требуют подписи или установки
 
 ## Выполненные проверки подготовки
 
-Проверено на Linux: 69 Rust tests и 63 Python tests (в том числе 8 новых preflight contract tests) прошли; fmt, strict clippy и release build прошли без изменения runtime-кода. Shell syntax, оба plist и все локальные Markdown-ссылки проверены. На Linux preflight даёт UNSUPPORTED_HOST с isolation_verified=false; Mac workload не запускался.
+Проверено на Linux: 69 Rust tests и 64 Python tests (в том числе 8 новых preflight contract tests) прошли; fmt, strict clippy и release build прошли без изменения runtime-кода. Shell syntax, оба plist и все локальные Markdown-ссылки проверены. На Linux preflight даёт UNSUPPORTED_HOST с isolation_verified=false; Mac workload не запускался.
 
 Native macOS host,
 helper/signing effects, process-tree containment и aggregate resource limits
