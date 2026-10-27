@@ -1,0 +1,61 @@
+name: Windows native qualification
+
+on:
+  workflow_dispatch:
+    inputs:
+      python_home:
+        description: Prepared offline portable CPython 3.12 directory on the qualification runner
+        required: true
+        type: string
+      toolchain_manifest:
+        description: Independent pinned all-files toolchain manifest on the runner
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  native-qualification:
+    # Deliberately not windows-latest: portable CI does not establish this OS,
+    # account or isolation profile. The runner must run as a standard user.
+    runs-on: [self-hosted, Windows, X64, petri-win11-24h2]
+    timeout-minutes: 20
+    env:
+      PETRI_WINDOWS_NATIVE_E2E: "1"
+      PETRI_WINDOWS_PYTHON_HOME: ${{ inputs.python_home }}
+      PETRI_WINDOWS_TOOLCHAIN_MANIFEST: ${{ inputs.toolchain_manifest }}
+      TEMP: ${{ runner.temp }}
+      TMP: ${{ runner.temp }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.99.1
+      - name: Run the real opt-in native suite
+        shell: pwsh
+        run: |
+          $qualificationStarted = [DateTime]::UtcNow
+          cargo test --locked --test windows_native -- --ignored --nocapture --exact windows::owned_offline_native_qualification
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $reports = Get-ChildItem -Path $env:TEMP -Filter report.json -Recurse -ErrorAction Stop |
+            Where-Object { $_.FullName -like '*petri-windows-qualification-*\qualification\report.json' -and $_.LastWriteTimeUtc -ge $qualificationStarted }
+          if (-not $reports) { throw 'Native qualification produced no report; zero tests cannot pass this job.' }
+          $report = $reports | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+          $facts = Get-Content -Raw $report.FullName | ConvertFrom-Json
+          if ($facts.assigned_suite -ne 'PASS' -or $facts.native_execution_observed -ne $true) {
+            throw 'Native qualification is not PASS with actual execution observations.'
+          }
+          if ($facts.full_specification -ne 'UNVERIFIED') {
+            throw 'This limited suite must not promote itself to full specification acceptance.'
+          }
+      - name: Preserve owned qualification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-native-owned-qualification
+          if-no-files-found: error
+          path: |
+            ${{ runner.temp }}/petri-windows-qualification-*/qualification/report.json
+            ${{ runner.temp }}/petri-windows-qualification-*/qualification/command-*.json
+            ${{ runner.temp }}/petri-windows-qualification-*/qualification/command-*.txt

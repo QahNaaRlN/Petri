@@ -23,7 +23,7 @@ pub fn run(opts: &RuntimeOptions) -> Result<i32> {
     #[cfg(not(target_os = "linux"))]
     {
         let _ = opts;
-        bail!("NotImplemented: native execution on this OS requires the Phase 2 Linux VM backend")
+        bail!("Unsupported: Linux rootfs execution requires Linux; on Windows use the separate `petri windows` native candidate")
     }
 }
 
@@ -34,7 +34,7 @@ pub fn doctor() -> serde_json::Value {
     }
     #[cfg(not(target_os = "linux"))]
     {
-        serde_json::json!({"supported": false,"reason": "NotImplemented: Phase 2 VM backend", "os": std::env::consts::OS})
+        serde_json::json!({"supported": false,"reason": "Linux rootfs backend requires Linux; native Windows diagnostics: petri windows doctor", "os": std::env::consts::OS})
     }
 }
 

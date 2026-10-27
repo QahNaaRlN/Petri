@@ -46,3 +46,10 @@ RustSec выявил informational unsound RUSTSEC-2026-0183/0184 в git2 0.20 �
 ## Уточнение после проверки в CI
 
 На `251cd325aa53a3b983cc89930ae55df64d7d5f22` реальный Linux E2E прошёл на GitHub Ubuntu runner (1 passed, 0 ignored); это подтверждает проверенный сценарий, не отсутствие всех путей побега. В последующем усилении init получает `PR_SET_DUMPABLE=0` до fork payload; E2E дополнен отрицательной проверкой открытия `/proc/1/mem`. Проверки новых коммитов видны в PR №1.
+
+
+## Внутреннее ревью Windows-кандидата — 2026-10-27
+
+Проверены контракты и исходники нового пакета; это не внешний аудит и не подтверждение нативных эффектов на Windows. В ходе реализации исправлены: доверие к workspace `.git`, Windows ADS/reparse/hardlink и case aliases, точная проверка LPAC SID/capability set, fresh environment, уничтожение suspended root при setup error, сброс прав прежнего workspace после restore, общий бюджет журнала с terminal reserve, лимиты обхода пустых каталогов, независимый watchdog при блокировке observer, staging-публикация result manifest и гонка ACL общего toolchain между лабами.
+
+Квалификация LPAC/IPC/network/Job crash на Windows здесь не выполнялась. Программный disk observer не даёт hard quota; системные private AppContainer filesystem/registry области входят в модель и требуют квалификации. Неизвестный исход блокирует новые исполнения; автоматическое восстановление отсутствующего guardian и cleanup остаются отдельными работами. Подробные границы и выполненные проверки перечислены в [статусе](status.md) и [руководстве](windows-native-candidate.md).
