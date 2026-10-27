@@ -1,6 +1,6 @@
 # Статус реализации и проверки
 
-Дата: 2026-10-27. Рабочая ветка `feat/windows-native-candidate`, основа — Linux-кандидат `70e0bc69c1a5be0761f073e69b6efae9a751b22d`. Версия CLI остаётся 0.3.0; `0.4-draft1` — редакция [ТЗ](requirements.md) и [ТС](technical-specification.md).
+Дата: 2026-10-27. В этой линии `feat/macos-native-candidate` подготовка macOS продолжает Windows-кандидат `69f6009`; Windows развивается в `feat/windows-native-candidate`, основа — Linux-кандидат `70e0bc69c1a5be0761f073e69b6efae9a751b22d`. Версия CLI остаётся 0.3.0; `0.4-draft1` — редакция [ТЗ](requirements.md) и [ТС](technical-specification.md).
 
 Windows-кандидат реализован для контролируемой офлайн-нагрузки. Он **не прошёл нативную квалификацию Windows** в текущей Linux-среде. Наличие исходников, Windows-бинарника или успешного portable CI не является доказательством изоляции.
 
@@ -41,3 +41,12 @@ Linux E2E требует доступных rootless namespaces и Landlock ABI 
 - Полная Docker API/Compose совместимость, release coverage/perf/dogfooding.
 
 Это остаток продукта из ТЗ, а не скрытая функциональность, включаемая флагом ослабления sandbox.
+
+
+## Подготовка macOS — 2026-10-27
+
+Ветка `feat/macos-native-candidate` содержит [пакет подготовки](macos-native-candidate.md): отдельные ТЗ/ТС, оценку публичных API Apple, MP-00…09 plan, 15 групп критериев приёмки, минимальные feasibility entitlements и read-only preflight. Он не исполняет helper, не подписывает/устанавливает код и не меняет TCC/SIP. Mac backend остаётся NOT IMPLEMENTED/UNVERIFIED.
+
+Первый исследуемый профиль — macOS 26 arm64, обычный non-admin account, native CPython 3.12 offline fixture. Точный build/patch и signing identities определяются на реальном Mac. Перенос Job/LPAC, per-lab App Sandbox containers, исполнение imported tools, контроль detached descendants и aggregate budgets не предполагаются существующими: это блокирующие исследования. Полный путь к runtime указан в плане, без скрытого fallback к SBPL, Endpoint Security или VM.
+
+Read-only preflight и его portable contract tests подтверждают только честный inventory/refusal/JSON, а не native isolation. Ранее перечисленные Windows проверки относятся к исходному кандидату; новые результаты подготовки записаны на входной странице macOS.

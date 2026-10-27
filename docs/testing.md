@@ -48,3 +48,8 @@ sha256sum -c SHA256SUMS
 ## Windows native candidate
 
 `cargo test` на Linux/macOS проверяет переносимую логику и явный отказ Windows namespace. Cross-compile Windows проверяет типы и linking; это не запуск LPAC. Реальная suite использует [отдельный qualification harness](../scripts/qualify-windows.py) и требует обычный Windows 11 24H2 x64 аккаунт, доверенный portable CPython 3.12 и независимый manifest. Точная команда и ограничения приведены в [руководстве кандидата](windows-native-candidate.md). Ignored/skipped не считаются успехом изоляции. Manual workflow не запускается автоматически на произвольном self-hosted runner.
+
+
+## Подготовка macOS
+
+[Read-only preflight и будущая приёмка](macos-acceptance.md) вынесены отдельно. `sh -n scripts/preflight-macos.sh` и `python -m unittest discover -s tests -p "test_macos_preflight.py" -v` проверяют подготовительную утилиту. На Linux она обязана вернуть Unsupported/UNVERIFIED без workload; на Windows POSIX-shell tests явно пропускаются. Ни один из этих результатов не считается настоящей macOS qualification. Подготовительные plist проверяются как XML/property lists без выполнения `codesign`.

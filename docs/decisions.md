@@ -146,3 +146,14 @@
 Windows получает отдельные namespace CLI `petri windows` и layout `native-v2`, не меняющие legacy metadata/Linux CLI. Toolchain — отдельный проверяемый нативный набор; Linux rootfs/OCI не интерпретируется как Windows stack. Системный Git не требуется. Подготовленные [ТЗ](requirements.md) и [ТС](technical-specification.md) описывают полную цель; [статус](status.md) перечисляет реализованный пакет и незакрытые требования.
 
 **Граница кандидата.** Первая контролируемая нагрузка — офлайн Python CLI. Нет допуска произвольного агента, GUI, ConPTY, Vault, Git push или сетевого allowlist. LPAC использует общее ядро Windows. Hard disk quota не заявляется. Сборка Windows и переносимые тесты не заменяют квалификацию на реальном Windows 11 24H2 x64 под обычной учётной записью. Этот ADR отменяет направление VM/WSL в ADR-018, сохраняя требование честной платформенной приёмки.
+
+
+## ADR-024. Подготовка собственного macOS backend через feasibility gates
+
+**Контекст.** После Linux и Windows требуется подготовить native macOS, сохранив исходную модель лаборатории и собственные адаптеры. Пользователь поручил подготовку следующей реализации, не запуск runtime на Mac.
+
+**Решение.** Создать `feat/macos-native-candidate` от текущей общей Windows линии. Первым исследовать публичный App Sandbox с подписанным helper на macOS 26 arm64 и контролируемым CPython fixture. Это направление feasibility, не принятая production boundary. Обязательны отдельные проверки imported executable access, per-lab app-container/identity, custody/stop всех descendants, resource scope, network/IPC, file collection и signing. Deprecated custom Seatbelt/SBPL, новые Endpoint Security API и privileged daemon не включаются автоматически. Если gate не пройден, выпуск профиля блокируется и фиксируется новое решение.
+
+**Контракты и совместимость.** Windows native-v2/control-v1 и legacy Linux сохраняются. План общего native-v3/macOS protocol version отделяет lifecycle от LPAC/Job/DWORD и Darwin facts; не изображает совместимость изменением существующих закрытых структур. Точные интерфейсы принимаются в MP-00. ТЗ/ТС, источники и критерии — в [пакете macOS](macos-native-candidate.md).
+
+**Статус.** Подготовлены документы, минимальные entitlements и read-only preflight. Runtime не реализован; signing/installation/host policy не изменялись. Наличие Mac, актуального SDK и signing identity не предполагается. Сборка/portable CI не являются доказательством macOS isolation.
