@@ -40,6 +40,7 @@ BINDING = re.compile(rf"^\s*Petri:\s*({SPEC_RE})\s*@\s*({PLAN_RE})\s*$", re.M)
 SPEC_LINE = re.compile(rf"^\s*Petri-Spec:\s*({SPEC_RE})\s*$", re.M)
 PLAN_LINE = re.compile(rf"^\s*Petri-Plan:\s*({PLAN_RE})\s*$", re.M)
 SHA = re.compile(r"^[0-9a-fA-F]{40}(?:[0-9a-fA-F]{24})?$")
+SAFE_ERROR_CODE = re.compile(r"[A-Za-z][A-Za-z0-9._/-]{0,159}")
 
 
 class SyncError(RuntimeError):
@@ -67,6 +68,15 @@ def timestamp(value: Any) -> str | None:
     if parsed.tzinfo is None:
         raise SyncError("Source timestamp has no timezone")
     return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def fibery_datetime(value: Any) -> str | None:
+    """Encode wire DateTime values without changing source-event identities."""
+    normalized = timestamp(value)
+    if normalized is None:
+        return None
+    parsed = datetime.fromisoformat(normalized.replace("Z", "+00:00"))
+    return parsed.isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 def positive_int(value: Any, label: str) -> int:
@@ -311,8 +321,16 @@ class Fibery:
             raise SyncError("Invalid Fibery command envelope")
         item = result[0]
         if item.get("success") is not True:
-            # Do not echo potentially sensitive API result or input text.
-            raise SyncError("Fibery command failed: " + name)
+            # Only the bounded machine code is diagnostic. Messages and data can
+            # contain input text, headers or secrets and must never be echoed.
+            error = item.get("result")
+            code = error.get("name") if isinstance(error, dict) else None
+            if not isinstance(code, str) or not SAFE_ERROR_CODE.fullmatch(code):
+                code = "unknown_error"
+            for secret in (self.token, os.getenv("FIBERY_API_TOKEN"), os.getenv("GITHUB_TOKEN")):
+                if secret:
+                    code = code.replace(secret, "[redacted]")
+            raise SyncError("Fibery command failed: " + name + " (" + code + ")")
         return item.get("result")
 
     def query(self, type_name: str, fields: dict[str, Any], where=None, params=None) -> list[dict[str, Any]]:
@@ -404,7 +422,7 @@ class Sync:
                     f"{SPACE}/Платформа": {ID: self.client.option(f"{SPACE}/Платформа_{EVIDENCE}", "common")},
                     f"{SPACE}/Результат проверки": {ID: self.client.option(f"{SPACE}/Результат проверки_{EVIDENCE}", source.status)},
                     f"{SPACE}/Наблюдалось нативное исполнение": False,
-                    f"{SPACE}/Дата проверки": self.observed_at,
+                    f"{SPACE}/Дата проверки": fibery_datetime(self.observed_at),
                 })
                 total["entities_created"] += 1
                 ev = self.client.unique(EVIDENCE, f"{SPACE}/Ключ доказательства", evidence_key, ev_fields)
@@ -421,7 +439,7 @@ class Sync:
                     f"{SPACE}/Спека": {ID: spec_id}, f"{SPACE}/Версия ожиданий на момент работы": {ID: plan_id},
                     f"{SPACE}/Тип факта": {ID: self.client.option(f"{SPACE}/Тип факта_{FACT}", "execution" if source.state == "completed" else "observation")},
                     "workflow/state": {ID: self.client.option(f"workflow/state_{FACT}", source.state)},
-                    f"{SPACE}/Когда произошло": source.occurred_at,
+                    f"{SPACE}/Когда произошло": fibery_datetime(source.occurred_at),
                 })
                 total["entities_created"] += 1
                 fact = self.client.unique(FACT, f"{SPACE}/Ключ узла", fact_key, fact_fields)
