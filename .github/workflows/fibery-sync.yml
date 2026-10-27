@@ -1,0 +1,52 @@
+name: Petri Human View sync
+
+on:
+  pull_request_target:
+    types: [opened, reopened, edited, synchronize, closed, ready_for_review, converted_to_draft]
+  workflow_run:
+    workflows: [CI, Windows native qualification]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+
+jobs:
+  identity:
+    if: github.repository == 'QahNaaRlN/petri'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    outputs:
+      lock_key: ${{ steps.identity.outputs.lock_key }}
+    steps:
+      # Always trusted protected default-branch code. Never checkout a PR head,
+      # download workflow artifacts, run event text, or execute source-run code.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - id: identity
+        name: Compute source-event lock key without credentials
+        run: python scripts/sync_fibery.py --concurrency-key >> "$GITHUB_OUTPUT"
+
+  sync:
+    needs: identity
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # Distinct events have distinct groups: GitHub's single pending slot cannot
+    # discard an earlier *different* event. Exact duplicates serialize.
+    concurrency:
+      group: petri-fibery-${{ needs.identity.outputs.lock_key }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - name: Append attributed GitHub metadata to existing Fibery databases
+        env:
+          FIBERY_API_TOKEN: ${{ secrets.FIBERY_API_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python scripts/sync_fibery.py
