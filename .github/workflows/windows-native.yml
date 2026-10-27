@@ -25,8 +25,6 @@ jobs:
       PETRI_WINDOWS_NATIVE_E2E: "1"
       PETRI_WINDOWS_PYTHON_HOME: ${{ inputs.python_home }}
       PETRI_WINDOWS_TOOLCHAIN_MANIFEST: ${{ inputs.toolchain_manifest }}
-      TEMP: ${{ runner.temp }}
-      TMP: ${{ runner.temp }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -34,6 +32,9 @@ jobs:
           toolchain: 1.99.1
       - name: Run the real opt-in native suite
         shell: pwsh
+        env:
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
         run: |
           $qualificationStarted = [DateTime]::UtcNow
           cargo test --locked --test windows_native -- --ignored --nocapture --exact windows::owned_offline_native_qualification
