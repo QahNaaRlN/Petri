@@ -722,3 +722,8 @@ Baseline: [Petri 70e0bc6](https://github.com/QahNaaRlN/petri/tree/70e0bc69c1a5be
 один бинарник не исключает OS prerequisites/toolchain; нативный профиль не
 означает абсолютной изоляции; snapshot не откатывает внешние эффекты; успешная
 команда не доказывает корректность инженерного результата.
+
+
+## Подготовка следующего macOS-пакета — 2026-10-27
+
+[macOS ТЗ](macos-requirements.md) и [macOS ТС](macos-technical-specification.md) добавлены в `feat/macos-native-candidate`, основанную на Windows-кандидате. Первое исследуемое направление — публичный подписанный App Sandbox helper на pinned macOS 26 arm64; production-механизм не принят до доказательства обязательных свойств. Эти документы не добавляют Mac runtime, не мигрируют Windows V2 и не меняют Linux backend. [План](macos-implementation-plan.md) выделяет общие контракты отдельно от OS-specific facts и требует явного нового формата вместо переинтерпретации Job/LPAC как Darwin.
