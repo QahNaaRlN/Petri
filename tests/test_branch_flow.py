@@ -14,6 +14,20 @@ def event(base, head, repository=flow.REPOSITORY, author=None):
 
 
 class BranchFlowTests(unittest.TestCase):
+    def test_canonical_repository_casing_preserves_exact_branch_routing(self):
+        payload = event("main", "dev", "qahnaarlN/PETRI")
+        payload["pull_request"]["base"]["repo"]["full_name"] = "QahNaaRlN/petri"
+        self.assertIn("promotion", flow.validate_event("pull_request", payload))
+        payload["pull_request"]["head"]["ref"] = "Dev"
+        with self.assertRaises(ValueError):
+            flow.validate_event("pull_request", payload)
+        payload["pull_request"]["head"]["ref"] = "dev"
+        payload["pull_request"]["head"]["repo"]["full_name"] = "other/petri"
+        with self.assertRaises(ValueError):
+            flow.validate_event("pull_request", payload)
+        self.assertFalse(flow.is_project_repository("QahNaaRlN/Petri/extra"))
+        self.assertFalse(flow.is_project_repository(None))
+
     def test_local_and_fork_working_branches_target_dev(self):
         for prefix in flow.WORK_PREFIXES:
             for repo in (flow.REPOSITORY, "contributor/Petri"):

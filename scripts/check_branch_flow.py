@@ -16,6 +16,11 @@ REPOSITORY = "QahNaaRlN/Petri"
 WORK_PREFIXES = ("feat/", "fix/", "docs/", "chore/")
 
 
+def is_project_repository(value: object) -> bool:
+    # GitHub repository names are case-insensitive; branch refs are not.
+    return isinstance(value, str) and value.isascii() and value.lower() == REPOSITORY.lower()
+
+
 def validate_event(event_name: str, payload: dict) -> str:
     if event_name in ("push", "workflow_dispatch"):
         return "No pull-request routing to validate for this event."
@@ -31,14 +36,14 @@ def validate_event(event_name: str, payload: dict) -> str:
     if not isinstance(base, dict) or not isinstance(head, dict):
         raise ValueError("Invalid branch metadata")
     base_repo, head_repo = base.get("repo"), head.get("repo")
-    if not isinstance(base_repo, dict) or base_repo.get("full_name") != REPOSITORY:
+    if not isinstance(base_repo, dict) or not is_project_repository(base_repo.get("full_name")):
         raise ValueError("Unexpected base repository")
     if not isinstance(head_repo, dict) or not isinstance(head_repo.get("full_name"), str):
         raise ValueError("Missing source repository identity")
     base_ref, head_ref = base.get("ref"), head.get("ref")
     if not isinstance(base_ref, str) or not isinstance(head_ref, str):
         raise ValueError("Missing branch identity")
-    same_repo = head_repo["full_name"] == REPOSITORY
+    same_repo = is_project_repository(head_repo["full_name"])
     if base_ref == "main":
         if same_repo and head_ref == "dev":
             return "Accepted: same-repository dev -> main promotion."
