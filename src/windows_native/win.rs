@@ -247,21 +247,87 @@ fn owner_dacl(path: &Path, user: &str) -> Result<()> {
         )
     }
 }
+fn creation_descriptor(user: &str) -> Result<Local> {
+    // A full administrator token can default a newly created object's owner
+    // to BUILTIN\\Administrators. Ownership is chosen explicitly at creation;
+    // existing objects still have to pass the strict TokenUser owner check.
+    descriptor(&format!("O:{user}D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;{user})"))
+}
+
+fn creation_path(path: &Path) -> Result<Vec<u16>> {
+    ensure!(
+        path.is_absolute()
+            && !path.components().any(|c| matches!(
+                c,
+                std::path::Component::ParentDir | std::path::Component::CurDir
+            )),
+        "InvalidInput: private object path must be absolute without dot segments"
+    );
+    let value = wide(path);
+    ensure!(
+        !value[..value.len() - 1].contains(&0),
+        "InvalidInput: NUL in private object path"
+    );
+    Ok(value)
+}
+
 pub(super) fn secure_private_dir(path: &Path) -> Result<()> {
+    let value = creation_path(path)?;
+    let user = current_user()?;
     if !path.exists() {
         let parent = path.parent().context("private directory parent")?;
         let _parents = check_parents(parent)?;
-        std::fs::create_dir(path).or_else(|e| {
-            if e.kind() == std::io::ErrorKind::AlreadyExists {
-                Ok(())
-            } else {
-                Err(e)
+        let descriptor = creation_descriptor(&user)?;
+        let attributes = SECURITY_ATTRIBUTES {
+            nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: descriptor.0,
+            bInheritHandle: 0,
+        };
+        if unsafe { CreateDirectoryW(value.as_ptr(), &attributes) } == 0 {
+            let error = std::io::Error::last_os_error();
+            if error.kind() != std::io::ErrorKind::AlreadyExists {
+                return Err(error).context("create private owner directory");
             }
-        })?;
+        }
     }
     let _handles = check_parents(path)?;
     ensure!(path.is_dir(), "private storage must be a directory");
-    owner_dacl(path, &current_user()?)
+    owner_dacl(path, &user)
+}
+
+pub(super) fn create_private_file(path: &Path) -> Result<std::fs::File> {
+    use std::os::windows::io::FromRawHandle;
+    let value = creation_path(path)?;
+    let parent = path.parent().context("private file parent")?;
+    let _parents = check_parents(parent)?;
+    let user = current_user()?;
+    assert_owner(parent, &user)?;
+    let descriptor = creation_descriptor(&user)?;
+    let attributes = SECURITY_ATTRIBUTES {
+        nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: descriptor.0,
+        bInheritHandle: 0,
+    };
+    let raw = unsafe {
+        CreateFileW(
+            value.as_ptr(),
+            GENERIC_READ | GENERIC_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            &attributes,
+            CREATE_NEW,
+            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
+            null_mut(),
+        )
+    };
+    if raw.is_null() || raw == INVALID_HANDLE_VALUE {
+        return Err(std::io::Error::last_os_error()).context("create private owner file");
+    }
+    let handle = Handle(raw);
+    assert_owner(path, &user)?;
+    std::mem::forget(handle);
+    // SAFETY: ownership of the sole non-inheritable CREATE_NEW handle moves
+    // into File exactly once after its current-user owner was verified.
+    Ok(unsafe { std::fs::File::from_raw_handle(raw) })
 }
 
 pub(super) fn secure_private_tree(root: &Path) -> Result<()> {
@@ -1391,4 +1457,40 @@ pub(super) fn run(
             }
         }
     })
+}
+
+#[cfg(test)]
+mod private_creation_tests {
+    use super::*;
+    use std::{io::Write, os::windows::io::AsRawHandle};
+
+    #[test]
+    fn new_private_objects_are_owned_by_token_user_even_with_elevated_default_owner() {
+        let temporary =
+            tempfile::TempDir::new_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+        let directory = temporary.path().join("private");
+        let user = current_user().unwrap();
+        secure_private_dir(&directory).unwrap();
+        assert_owner(&directory, &user).unwrap();
+        secure_private_dir(&directory).unwrap();
+
+        let path = directory.join("owned.bin");
+        let mut file = create_private_file(&path).unwrap();
+        assert_owner(&path, &user).unwrap();
+        let mut flags = 0;
+        check(
+            unsafe { GetHandleInformation(file.as_raw_handle(), &mut flags) },
+            "inspect new private handle",
+        )
+        .unwrap();
+        assert_eq!(flags & HANDLE_FLAG_INHERIT, 0);
+        file.write_all(b"owned contents").unwrap();
+        drop(file);
+        let error = create_private_file(&path).unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<std::io::Error>().unwrap().kind(),
+            std::io::ErrorKind::AlreadyExists
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), b"owned contents");
+    }
 }

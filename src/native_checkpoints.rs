@@ -97,10 +97,7 @@ fn copy_tree(
                 *files <= 100_000 && *total <= 512 * 1024 * 1024 && length <= 64 * 1024 * 1024,
                 "ArtifactInvalid: native checkpoint exceeds file/size bounds"
             );
-            let mut output = fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&target)?;
+            let mut output = create_private_file(&target)?;
             ensure!(
                 std::io::copy(
                     &mut std::io::Read::by_ref(&mut input).take(length + 1),
@@ -237,13 +234,24 @@ fn audit(directory: &Path, lab: &str, kind: &str, checkpoint: &str) -> Result<()
 }
 
 fn write_new_json(path: &Path, value: &impl Serialize) -> Result<()> {
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)?;
+    let mut file = create_private_file(path)?;
     file.write_all(&serde_json::to_vec_pretty(value)?)?;
     file.sync_all()?;
     Ok(())
+}
+
+fn create_private_file(path: &Path) -> Result<fs::File> {
+    #[cfg(windows)]
+    {
+        crate::windows_native::create_private_file(path)
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)?)
+    }
 }
 
 pub fn create(store: &Store, lab: &str, message: &str) -> Result<String> {
@@ -370,7 +378,9 @@ pub fn restore(store: &Store, lab: &str, checkpoint: &str) -> Result<()> {
         }
         sync_directory(directory)?;
         #[cfg(windows)]
-        crate::windows_native::secure_private_tree(&previous)?;
+        // Only the old workspace was granted the workload SID. Git metadata
+        // remained controller-only and retains its original private DACL.
+        crate::windows_native::secure_private_tree(&previous.join("workspace"))?;
         audit(directory, lab, "restore_completed", checkpoint)?;
         fs::remove_file(&marker)?;
         sync_directory(directory)?;
@@ -387,25 +397,33 @@ mod tests {
 
     #[test]
     fn enumeration_bounds_empty_directories_and_refuses_case_aliases() {
-        let temporary = tempfile::tempdir().unwrap();
+        let temporary_root = std::env::temp_dir().canonicalize().unwrap();
+        let temporary = tempfile::TempDir::new_in(temporary_root).unwrap();
         fs::create_dir(temporary.path().join("first")).unwrap();
         fs::create_dir(temporary.path().join("second")).unwrap();
         assert!(bounded_names(temporary.path(), &mut 99_999)
             .unwrap_err()
             .to_string()
             .contains("node bound"));
-        #[cfg(unix)]
-        {
-            fs::create_dir(temporary.path().join("FIRST")).unwrap();
-            assert!(snapshot_digest(temporary.path())
+        match fs::create_dir(temporary.path().join("FIRST")) {
+            Ok(()) => assert!(snapshot_digest(temporary.path())
                 .unwrap_err()
                 .to_string()
-                .contains("case-colliding"));
+                .contains("case-colliding")),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                assert_eq!(
+                    bounded_names(temporary.path(), &mut 0).unwrap(),
+                    vec!["first".to_string(), "second".to_string()]
+                );
+                assert!(snapshot_digest(temporary.path()).is_ok());
+            }
+            Err(error) => panic!("case-alias fixture creation failed: {error}"),
         }
     }
     #[test]
     fn restores_files_and_git_without_rewinding_execution_history() {
-        let temporary = tempfile::tempdir().unwrap();
+        let temporary_root = std::env::temp_dir().canonicalize().unwrap();
+        let temporary = tempfile::TempDir::new_in(temporary_root).unwrap();
         let source = temporary.path().join("source");
         let repository = git2::Repository::init(&source).unwrap();
         fs::write(source.join("fixture.py"), "print('before')\n").unwrap();

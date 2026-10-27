@@ -978,6 +978,12 @@ fn reject_alias_chain(path: &Path) -> Result<()> {
             "PolicyDenied: ambiguous storage path"
         );
         current.push(component);
+        #[cfg(windows)]
+        if matches!(component, Component::Prefix(_)) {
+            // C: and \\?\C: are prefixes, not filesystem objects. Inspect the
+            // drive root after RootDir, then every actual ancestor below it.
+            continue;
+        }
         match fs::symlink_metadata(&current) {
             Ok(metadata) => {
                 ensure!(
@@ -1021,6 +1027,25 @@ fn open_private(path: &Path, new: bool, read: bool) -> Result<File> {
         use std::os::windows::fs::OpenOptionsExt;
         options.custom_flags(0x0020_0000); // FILE_FLAG_OPEN_REPARSE_POINT
     }
+    #[cfg(windows)]
+    let file = if new {
+        crate::windows_native::create_private_file(path)?
+    } else if !read {
+        match crate::windows_native::create_private_file(path) {
+            Ok(file) => file,
+            Err(error)
+                if error
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|e| e.kind() == std::io::ErrorKind::AlreadyExists) =>
+            {
+                options.create(false).open(path)?
+            }
+            Err(error) => return Err(error),
+        }
+    } else {
+        options.open(path)?
+    };
+    #[cfg(not(windows))]
     let file = options.open(path)?;
     let metadata = file.metadata()?;
     ensure!(
@@ -1122,7 +1147,8 @@ mod tests {
     use tempfile::TempDir;
 
     fn fixture() -> (TempDir, Store, LabRecord, StartRequest) {
-        let temp = TempDir::new().unwrap();
+        let temporary_root = std::env::temp_dir().canonicalize().unwrap();
+        let temp = TempDir::new_in(temporary_root).unwrap();
         let source = temp.path().join("source");
         fs::create_dir(&source).unwrap();
         let repo = Repository::init(&source).unwrap();

@@ -11,7 +11,9 @@ use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::{self, File, OpenOptions};
+#[cfg(not(windows))]
+use std::fs::OpenOptions;
+use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf};
 
@@ -85,6 +87,8 @@ impl NativeToolStore {
         let root_guard = pin_directory(&root)?;
         require_ntfs(&root_guard)?;
         guards.push(root_guard);
+        #[cfg(windows)]
+        let root = absolute_path(&root.canonicalize()?)?;
         Ok(Self {
             root,
             _directory_guards: guards,
@@ -103,12 +107,24 @@ impl NativeToolStore {
                 .last()
                 .context("missing source directory handle")?,
         )?;
+        #[cfg(windows)]
+        let source = absolute_path(&source.canonicalize()?)?;
         // Lexical checks complement held directory handles and exact file hashes.
         ensure!(
             !self.root.starts_with(&source) && !source.starts_with(&self.root),
             "PolicyDenied: tool source and store must not contain one another"
         );
         let manifest_path = absolute_path(manifest_path)?;
+        // Keep the exact no-follow manifest and its ancestors pinned before
+        // resolving case/short-name spelling for the containment comparison.
+        #[cfg(windows)]
+        let (_manifest_parents, _manifest_file, manifest_path) = {
+            let parent = manifest_path.parent().context("manifest has no parent")?;
+            let parents = pin_directory_chain(parent)?;
+            let file = crate::git::open_regular_no_links(&manifest_path)?;
+            let canonical = absolute_path(&manifest_path.canonicalize()?)?;
+            (parents, file, canonical)
+        };
         ensure!(
             !manifest_path.starts_with(&source),
             "InvalidRequest: import manifest must be outside the source tree"
@@ -713,13 +729,50 @@ fn absolute_path(path: &Path) -> Result<PathBuf> {
     );
     #[cfg(windows)]
     {
-        use std::path::Prefix;
-        ensure!(
-            matches!(path.components().next(),Some(Component::Prefix(p)) if matches!(p.kind(),Prefix::Disk(_))),
-            "Unsupported: native tools require ordinary local drive paths, not UNC/device aliases"
-        );
+        normalize_windows_local_path(&path)
     }
-    Ok(path)
+    #[cfg(not(windows))]
+    {
+        Ok(path)
+    }
+}
+
+#[cfg(windows)]
+fn normalize_windows_local_path(path: &Path) -> Result<PathBuf> {
+    use std::{os::windows::ffi::OsStrExt, path::Prefix};
+    let mut components = path.components();
+    let drive = match components.next() {
+        Some(Component::Prefix(prefix)) => match prefix.kind() {
+            Prefix::Disk(drive) | Prefix::VerbatimDisk(drive) => drive,
+            _ => {
+                bail!("Unsupported: native tools require local drive paths, not UNC/device aliases")
+            }
+        },
+        _ => bail!("Unsupported: native tools require an absolute local drive path"),
+    };
+    ensure!(
+        matches!(components.next(), Some(Component::RootDir)),
+        "InvalidRequest: native tools require an absolute local drive path"
+    );
+    // std::fs::canonicalize uses this spelling on Windows. Normalize ordinary
+    // and canonical paths alike instead of treating the latter as a device
+    // namespace, or allowing the two spellings to bypass containment checks.
+    let mut normalized =
+        PathBuf::from(format!(r"\\?\{}:\", char::from(drive).to_ascii_uppercase()));
+    for component in components {
+        let Component::Normal(name) = component else {
+            bail!("InvalidRequest: absolute native path cannot contain dot segments");
+        };
+        let units: Vec<_> = name.encode_wide().collect();
+        ensure!(
+            !units.is_empty()
+                && !units.iter().any(|c| matches!(*c, 0..=31 | 47 | 58 | 92))
+                && !matches!(units.last(), Some(32 | 46)),
+            "Unsupported: ambiguous local-drive path component"
+        );
+        normalized.push(name);
+    }
+    Ok(normalized)
 }
 
 fn pin_directory_chain(path: &Path) -> Result<Vec<File>> {
@@ -789,14 +842,21 @@ fn private_dir(path: &Path) -> Result<()> {
 }
 
 fn create_private_file(path: &Path) -> Result<File> {
-    let mut options = OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
+    #[cfg(windows)]
     {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+        crate::windows_native::create_private_file(path)
     }
-    Ok(options.open(path)?)
+    #[cfg(not(windows))]
+    {
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+        }
+        Ok(options.open(path)?)
+    }
 }
 
 #[cfg(windows)]
@@ -880,7 +940,7 @@ mod tests {
     }
 
     fn fixture() -> (tempfile::TempDir, PathBuf, PathBuf, ToolchainManifest) {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = tempfile::TempDir::new_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
         let source = temp.path().join("input");
         fs::create_dir(&source).unwrap();
         let values = [
@@ -971,6 +1031,96 @@ mod tests {
         assert!(validate_tool_content(&file, "python312._pth").is_err());
         fs::write(&file, "python312.zip\n.\n# import site\n").unwrap();
         validate_tool_content(&file, "python312._pth").unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn local_drive_spellings_match_without_accepting_other_namespaces() {
+        assert_eq!(
+            normalize_windows_local_path(Path::new(r"c:\private\tools")).unwrap(),
+            normalize_windows_local_path(Path::new(r"\\?\C:\private\tools")).unwrap()
+        );
+        for path in [
+            r"\\server\share\tools",
+            r"\\?\UNC\server\share\tools",
+            r"\\.\C:\tools",
+            r"\\?\GLOBALROOT\Device\HarddiskVolume1\tools",
+            r"\\?\Volume{00000000-0000-0000-0000-000000000000}\tools",
+            r"C:relative",
+            r"\\?\C:\private/../tools",
+            r"C:\private\trailing.",
+            r"C:\private\tool:stream",
+        ] {
+            assert!(
+                normalize_windows_local_path(Path::new(path)).is_err(),
+                "{path}"
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn canonical_execution_store_path_opens_tool_store_and_imports() {
+        let (temp, source, path, _) = fixture();
+        let control = crate::execution::Store::open(temp.path().join("private")).unwrap();
+        let store = NativeToolStore::open(control.root.join("toolchains")).unwrap();
+        assert_eq!(
+            store.root,
+            control.root.join("toolchains").canonicalize().unwrap()
+        );
+        let tool = store.import(&source, &path).unwrap();
+        store.verify(&tool).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn canonical_and_ordinary_spellings_cannot_hide_source_store_overlap() {
+        let (temp, source, path, _) = fixture();
+        let store = NativeToolStore::open(source.join("inside-store")).unwrap();
+        assert!(store
+            .import(&source, &path)
+            .unwrap_err()
+            .to_string()
+            .contains("must not contain"));
+        assert!(store
+            .import(&source.canonicalize().unwrap(), &path)
+            .unwrap_err()
+            .to_string()
+            .contains("must not contain"));
+        drop(store);
+
+        let store = NativeToolStore::open(temp.path().join("outside-store")).unwrap();
+        let nested = temp.path().join("outside-store").join("nested-input");
+        fs::create_dir(&nested).unwrap();
+        assert!(store
+            .import(&nested, &path)
+            .unwrap_err()
+            .to_string()
+            .contains("must not contain"));
+        assert!(store
+            .import(&nested.canonicalize().unwrap(), &path)
+            .unwrap_err()
+            .to_string()
+            .contains("must not contain"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn manifest_containment_uses_the_same_local_drive_spelling() {
+        let (temp, source, path, _) = fixture();
+        let store = NativeToolStore::open(temp.path().join("store")).unwrap();
+        let inside = source.join("manifest.json");
+        fs::copy(&path, &inside).unwrap();
+        for (source, manifest) in [
+            (source.canonicalize().unwrap(), inside.clone()),
+            (source, inside.canonicalize().unwrap()),
+        ] {
+            assert!(store
+                .import(&source, &manifest)
+                .unwrap_err()
+                .to_string()
+                .contains("outside the source"));
+        }
     }
 
     #[cfg(unix)]

@@ -11,6 +11,7 @@ Petri сохраняет независимый Git-снимок исходно�
 - [Проверки и ограничения](docs/status.md)
 - [Подготовка macOS: ТЗ/ТС, API, план и приёмка](docs/macos-native-candidate.md)
 - [Ветки, защита и клонирование на Windows](docs/repository-governance.md)
+- [Интеграция кандидатов в общую линию](docs/branch-integration.md)
 - [Внутреннее ревью безопасности](docs/security-review.md)
 
 ## Сборка

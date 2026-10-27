@@ -328,8 +328,13 @@ pub fn create_workspace(source: &Path, destination: &Path, branch: &str) -> Resu
     let metadata = parent.join("git");
     ensure!(!destination.exists(), "workspace already exists");
     ensure!(!metadata.exists(), "lab Git metadata already exists");
+    #[cfg(windows)]
+    crate::windows_native::secure_private_dir(destination)?;
+    #[cfg(not(windows))]
     fs::create_dir(destination)?;
     let result = (|| -> Result<String> {
+        #[cfg(windows)]
+        crate::windows_native::secure_private_dir(&metadata)?;
         let lab = Repository::init_bare(&metadata)?;
         let mut exported = Files::new();
         for (path, entry) in files {
@@ -339,6 +344,15 @@ pub fn create_workspace(source: &Path, destination: &Path, branch: &str) -> Resu
             let blob = src.find_blob(entry.oid)?;
             let output = destination.join(&path);
             if let Some(dir) = output.parent() {
+                #[cfg(windows)]
+                {
+                    let mut current = destination.to_path_buf();
+                    for component in dir.strip_prefix(destination)?.components() {
+                        current.push(component);
+                        crate::windows_native::secure_private_dir(&current)?;
+                    }
+                }
+                #[cfg(not(windows))]
                 fs::create_dir_all(dir)?;
             }
             if entry.mode == 0o120000 {
@@ -346,7 +360,7 @@ pub fn create_workspace(source: &Path, destination: &Path, branch: &str) -> Resu
                 safe_link(&path, Path::new(target))?;
                 create_symlink(Path::new(target), &output)?;
             } else {
-                fs::write(&output, blob.content())?;
+                write_new_export_file(&output, blob.content())?;
                 set_executable(&output, entry.mode == 0o100755)?;
             }
             let oid = lab.blob(blob.content())?;
@@ -370,10 +384,16 @@ pub fn create_workspace(source: &Path, destination: &Path, branch: &str) -> Resu
             &[],
         )?;
         lab.set_head(&reference)?;
-        fs::write(metadata.join("petri-source-head"), source_base.to_string())?;
-        fs::write(metadata.join("petri-baseline"), initial.to_string())?;
+        write_new_export_file(
+            &metadata.join("petri-source-head"),
+            source_base.to_string().as_bytes(),
+        )?;
+        write_new_export_file(
+            &metadata.join("petri-baseline"),
+            initial.to_string().as_bytes(),
+        )?;
         // The sibling metadata directory is deliberately absent from the sandbox.
-        fs::write(destination.join(".git"), "gitdir: ../git\n")?;
+        write_new_export_file(&destination.join(".git"), b"gitdir: ../git\n")?;
         Ok(source_base.to_string())
     })();
     if result.is_err() {
@@ -381,6 +401,20 @@ pub fn create_workspace(source: &Path, destination: &Path, branch: &str) -> Resu
         let _ = fs::remove_dir_all(metadata);
     }
     result
+}
+
+fn write_new_export_file(path: &Path, contents: &[u8]) -> Result<()> {
+    #[cfg(windows)]
+    {
+        use std::io::Write;
+        let mut file = crate::windows_native::create_private_file(path)?;
+        file.write_all(contents)?;
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(fs::write(path, contents)?)
+    }
 }
 
 #[cfg(unix)]

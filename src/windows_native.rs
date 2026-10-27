@@ -320,6 +320,31 @@ pub fn secure_private_dir(path: &Path) -> Result<()> {
     }
 }
 
+/// Create a new controller-owned file with a non-inherited private descriptor.
+/// Existing objects are never adopted or repaired by this operation.
+pub fn create_private_file(path: &Path) -> Result<std::fs::File> {
+    #[cfg(windows)]
+    {
+        win::create_private_file(path)
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        Ok(std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
+            .open(path)?)
+    }
+    #[cfg(not(any(windows, unix)))]
+    {
+        let _ = path;
+        bail!("UnsupportedPlatform: private file creation unavailable")
+    }
+}
+
 /// Revoke workload grants from an entire stopped, Petri-owned retained tree.
 /// Caller must first prove the laboratory process tree has stopped.
 pub fn secure_private_tree(path: &Path) -> Result<()> {
