@@ -1,0 +1,13 @@
+.petri-clamp-three {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+}
+.petri-graph-surface {
+  background-color: var(--background);
+  background-image: radial-gradient(var(--border) 0.75px, transparent 0.75px);
+  background-size: 16px 16px;
+}
+.petri-document { font-size: 0.875rem; line-height: 1.7; }
+.petri-document > div { min-height: 15rem; }
