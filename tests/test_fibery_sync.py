@@ -251,6 +251,61 @@ class PersistenceTests(unittest.TestCase):
 
 
 class WireTests(unittest.TestCase):
+    def test_datetime_wire_format_is_utc_milliseconds_and_preserves_none(self):
+        cases = [
+            ("2026-10-27T13:48:33.438122Z", "2026-10-27T13:48:33.438Z"),
+            ("2026-10-27T15:48:33.438122+02:00", "2026-10-27T13:48:33.438Z"),
+            ("2026-10-27T10:00:00Z", "2026-10-27T10:00:00.000Z"),
+            ("2026-10-27T10:00:00.4Z", "2026-10-27T10:00:00.400Z"),
+            (None, None),
+        ]
+        for source, expected in cases:
+            with self.subTest(source=source):
+                self.assertEqual(m.fibery_datetime(source), expected)
+
+    def test_wire_datetime_fix_does_not_change_existing_pr_event_key(self):
+        event = pull_event()
+        self.assertEqual(m.event_identity("pull_request_target", event), "pr:17:19d18fa508466adb158b9dac")
+        db = MemoryFibery()
+        observation = m.observations("pull_request_target", event, None)[0]
+        sync = m.Sync(db, observed_at="2026-10-27T13:48:33.438122Z")
+        sync.run(observation)
+        self.assertEqual(db.rows[m.EVIDENCE][0]["values"][f"{m.SPACE}/Дата проверки"],
+                         "2026-10-27T13:48:33.438Z")
+        self.assertEqual(db.rows[m.FACT][0]["values"][f"{m.SPACE}/Когда произошло"],
+                         "2026-10-27T10:00:00.000Z")
+        sync.run(observation)
+        self.assertEqual(len(db.rows[m.EVIDENCE]), 1)
+        self.assertEqual(len(db.rows[m.FACT]), 1)
+
+    def test_api_error_exposes_only_bounded_machine_code(self):
+        class Transport:
+            def __init__(self, name):
+                self.name = name
+            def request(self, *args):
+                return [{"success": False, "result": {"name": self.name,
+                         "message": "PRIVATE-MESSAGE token-123", "data": {"headers": "PRIVATE-DATA"}}}]
+        for code, expected in [("entity.error/invalid-date-time", "entity.error/invalid-date-time"),
+                               ("bad code\nPRIVATE", "unknown_error"),
+                               ("x" * 161, "unknown_error"),
+                               (None, "unknown_error")]:
+            with self.subTest(code=code):
+                with self.assertRaises(m.SyncError) as raised:
+                    m.Fibery("token-123", Transport(code)).create(m.EVIDENCE, {})
+                message = str(raised.exception)
+                self.assertIn(expected, message)
+                for private in ["PRIVATE-MESSAGE", "PRIVATE-DATA", "token-123"]:
+                    self.assertNotIn(private, message)
+
+    def test_api_error_machine_code_redacts_credential_if_reflected(self):
+        class Transport:
+            def request(self, *args):
+                return [{"success": False, "result": {"name": "entity.error/secret-token"}}]
+        with self.assertRaises(m.SyncError) as raised:
+            m.Fibery("secret-token", Transport()).create(m.EVIDENCE, {})
+        self.assertNotIn("secret-token", str(raised.exception))
+        self.assertIn("[redacted]", str(raised.exception))
+
     def test_lock_cli_needs_no_secret_or_api_and_outputs_only_safe_hash(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "event.json"
