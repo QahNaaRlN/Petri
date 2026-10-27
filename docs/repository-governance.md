@@ -1,6 +1,6 @@
 # Ветки и правила репозитория
 
-Редакция: 2026-10-26. Репозиторий: [QahNaaRlN/Petri](https://github.com/QahNaaRlN/Petri).
+Редакция: 2026-10-27. Репозиторий: [QahNaaRlN/Petri](https://github.com/QahNaaRlN/Petri).
 
 ## Целевая конфигурация
 
@@ -25,8 +25,8 @@
 | Обязательная проверка CI | Что проверяет |
 | --- | --- |
 | `Build and portable tests (ubuntu-24.04)` | Linux host-side tests, fmt/clippy и release build |
-| `Build and portable tests (macos-14)` | Переносимые host-side tests и build; не macOS VM isolation |
-| `Build and portable tests (windows-2022)` | Переносимые host-side tests и build; не WSL2 isolation |
+| `Build and portable tests (macos-14)` | Переносимые host-side tests и build; не квалификация native macOS isolation |
+| `Build and portable tests (windows-2022)` | Переносимые host-side tests и build; не квалификация native Windows isolation |
 | `Native Linux isolation (required; no skipped success)` | Настоящий Linux namespace/rootfs/network E2E |
 | `Dependency vulnerability audit` | Проверка зависимостей по RustSec |
 
@@ -34,7 +34,7 @@
 
 ## Фактический статус
 
-Подтверждённый снимок на 2026-10-26:
+Исторический подтверждённый снимок на 2026-10-26:
 
 | Настройка | Фактическое состояние |
 | --- | --- |
@@ -55,9 +55,11 @@
 
 Подтверждённые отдельно для **обеих** веток значения classic protection: PR required, 0 обязательных approvals, stale dismissal включён, code-owner/latest-push approval не требуются; strict/up-to-date включён, все пять check contexts привязаны к GitHub Actions (app ID 15368); conversations должны быть разрешены; администраторы подчиняются правилам; linear history выключена; force push и deletion запрещены. Lock branch, deployment gates и обязательные подписи коммитов не включены. Обе защиты, merge-commit-only режим и отключённый auto-merge действуют; `master` удалена. Коммиты `main` и `dev` при настройке не менялись, PR #1 не сливался.
 
-[PR #1](https://github.com/QahNaaRlN/Petri/pull/1) содержит реализацию v0.3 в `feat/petri-v0.3` и остаётся отдельным draft PR до явного решения о merge. Организация репозитория не означает разрешения слить этот PR. Базовая ветка пока содержит начальный `.gitignore`, а не готовый Petri; наличие `main` не означает релизную готовность продукта.
+На 2026-10-27 Linux-ветка переименована штатной GitHub rename operation в `feat/linux-native-candidate`; исходный runtime-коммит `70e0bc69c1a5be0761f073e69b6efae9a751b22d` сохранён. GitHub закрыл [PR #1](https://github.com/QahNaaRlN/Petri/pull/1), поскольку переименована его head branch. [Заменяющий draft PR #2](https://github.com/QahNaaRlN/Petri/pull/2) имеет head `feat/linux-native-candidate`, base `dev`; история #1 остаётся доступной. Merge не выполнялся. Таблица выше и JSON-снимки в `verification/` отражают дату исходной настройки, а не состояние PR после rename.
 
-До слияния PR #1 для работы с реализацией следует клонировать `feat/petri-v0.3`. После его слияния в `dev` новые рабочие ветки создаются от актуальной `dev`. Promotion в `main` — отдельный PR и отдельное решение. Старое имя `master` удалено после проверки защиты и сохранности истории; новые PR его не используют. Дополнительная пустая `release/*` не создаётся.
+Имена платформенных кандидатов: `feat/linux-native-candidate`, `feat/windows-native-candidate`, `feat/macos-native-candidate`. Windows-кандидат сохраняет Linux основу, macOS-подготовка продолжает общие контракты Windows-кандидата. Это ветки разработки, не три принятых релиза. Постоянные `main`/`dev`, их защита, default и merge policy не изменяются.
+
+До слияния Linux PR #2 для работы с Linux-кандидатом следует клонировать `feat/linux-native-candidate`; для остальных платформ выбирается соответствующая кандидатная ветка. После его слияния в `dev` новые рабочие ветки создаются от актуальной `dev`. Promotion в `main` — отдельный PR и отдельное решение. Старое имя `master` удалено после проверки защиты и сохранности истории; новые PR его не используют. Дополнительная пустая `release/*` не создаётся.
 
 ## Применение GitHub settings с локальной авторизацией
 
@@ -82,7 +84,7 @@ python scripts/configure_github.py --verify --delete-master
 
 ```powershell
 New-Item -ItemType Directory -Force 'D:\PersonalProjects' | Out-Null
-git clone --branch feat/petri-v0.3 https://github.com/QahNaaRlN/Petri.git 'D:\PersonalProjects\Petri'
+git clone --branch feat/linux-native-candidate https://github.com/QahNaaRlN/Petri.git 'D:\PersonalProjects\Petri'
 git -C 'D:\PersonalProjects\Petri' status
 ```
 
