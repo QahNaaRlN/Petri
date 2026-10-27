@@ -1,0 +1,3 @@
+# Preserve verbatim source documents, including their original whitespace.
+docs/sources/*.txt -whitespace
+docs/sources/*.docx binary

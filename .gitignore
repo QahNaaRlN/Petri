@@ -2,3 +2,7 @@
 /target-*/
 /.petri/
 *.cast
+
+# Local Python tooling caches
+__pycache__/
+*.py[cod]

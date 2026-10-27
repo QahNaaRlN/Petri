@@ -1,0 +1,177 @@
+ТС — Technical Specification — Проект «Матрешка» / Petri
+OS для агентов
+
+**EN term:** Technical Specification, используется аббревиатура **ТС** (кириллица), не TS
+
+1. Архитектура высокого уровня
+
+```
+Host OS (Linux / macOS / Windows)
+ └─ petri (single binary, Rust)
+     ├─ Core Orchestrator
+     ├─ Isolator (trait) -> LinuxIsolator | MacIsolator | WinIsolator
+     ├─ GitManager (gitoxide)
+     ├─ StackHub (OCI store)
+     ├─ Observer (Blackbox)
+     ├─ PolicyEngine
+     └─ Compat Layer (Docker API socket)
+         └─ Lab: { worktree + container (rootfs) + blackbox }
+```
+
+Принцип матрешки: каждый слой — кукла внутри куклы. Хост неуязвим, main неуязвим.
+
+2. Компоненты
+
+2.1 Core Runtime (Rust)
+- Язык: Rust 1.80+, tokio, clap.
+- Без демона. Каждый `petri create` — отдельный supervisor процесс.
+- Хранение: `~/.petri/` (XDG на Linux, Library/Application Support на Mac, AppData на Win).
+
+2.2 Isolator Trait
+```rust
+trait Isolator {
+  fn create(&self, opts: CreateOpts) -> Result<ContainerId>;
+  fn destroy(&self, id: ContainerId) -> Result<()>;
+  fn checkpoint(&self, id: ContainerId) -> Result<CheckpointId>;
+}
+```
+- **LinuxIsolator:** `unshare(CLONE_NEWNS|NEWNET|NEWPID)`, `pivot_root`, `overlayfs` (lower=stack rootfs, upper=lab upper, work=work). cgroup v2 для лимитов. Встроенный код совместимый с `crun`.
+- **MacIsolator:** Использует `apple-virtualization` crate. При первом запуске распаковывает `alpine-micro.img (80MB)` в `~/.petri/vm/`. Внутри VM работает тот же LinuxIsolator. Расшаривание файлов через virtiofs.
+- **WinIsolator:** Два бэкенда. Приоритет 1 — WSL2: `wsl --import petri-engine <path> rootfs.tar`. Все контейнеры внутри этого дистрибутива. Приоритет 2 — HCS через `windows-rs`.
+
+2.3 GitManager
+- Библиотека: `gitoxide` (чистый Rust).
+- Bare репо кэш: `~/.petri/bare-cache/<repo-hash>` или использует существующий `.git` в read-only режиме.
+- Worktree создается в `.petri/labs/{id}/workspace`. `.git` файл указывает на bare.
+- Операции: create_worktree, list_worktrees, diff, commit, push (блокируется политикой).
+
+2.4 StackHub
+- Формат: OCI Image Layout.
+- Хранение: `~/.petri/stacks/<name>@<sha256>/rootfs/` — распакованный rootfs.
+- Content-addressable дедупликация: одинаковые блобы захардлинкованы.
+- `petri stack build` строит из Nix-подобного `stack.yaml`, воспроизводимо, но поддерживает Dockerfile для совместимости.
+
+2.5 Observer / Blackbox
+Структура:
+```
+.petri/labs/{id}/
+  workspace/
+  upper/
+  blackbox/
+    terminal.cast
+    events.jsonl
+    fs.diff
+    trajectory.jsonl
+    meta.json
+```
+- Linux: fanotify для FS, eBPF для exec.
+- Mac/Win: то же внутри VM, на хосте только FSEvents/ReadDir для upper.
+- Логи append-only, ротация zstd.
+
+2.6 PolicyEngine
+```yaml
+deny:
+  paths: ["~/.ssh", "**/.env"]
+  syscalls: ["mount"]
+  network: ["*"] except ["registry.npmjs.org"]
+  push_to: ["main"]
+circuit_breaker:
+  max_file_deletes_per_min: 50
+  max_same_error_retries: 3
+```
+Генерирует seccomp-bpf профиль.
+
+2.7 Кэш и провенанс
+- Ключ кэша: `blake3(repo+stack+prompt)` -> diff. Одинаковый вход возвращает кэшированный diff без запуска агента.
+- Провенанс: каждый коммит подписан трейлерами `petri-stack:...`, `petri-model:...`, хеш blackbox IPFS.
+
+3. Брокер секретов — аналог 1Password for Agents
+
+**Референс:** 1Password запустил 1Password for Agents как trust layer, позволяет агентам использовать пароли/секреты не видя их. Агент запрашивает credential с уникальным цифровым ключом, пользователь апрувит биометрией, 1Password автозаполняет напрямую в форму, секрет никогда не попадает к модели. Zero-exposure framework, per-task scoped access, Agentic Mode лочит хранилище только на апрувнутые айтемы. Для dev-агентов, 1Password Environments MCP Server монтирует секреты в безопасный рантайм и удаляет после использования.
+
+**Дизайн Petri Vault:**
+- **Бэкенд:** OS Keychain + опционально 1Password Connect / `op` CLI.
+- **Брокер:** Хост-демон `petri vault broker` слушает `~/.petri/vault.sock`, верифицирует lab_id подпись.
+- **Инжекторы:**
+  - SSH: `SSH_AUTH_SOCK` указывает на прокси брокера, подпись происходит на хосте, приватный ключ никогда не входит в контейнер.
+  - Git HTTPS: `git credential helper` -> `petri vault git-credential`.
+  - Env: tmpfs `/run/petri/secrets/<name>` 400, TTL = время жизни задачи.
+- **Флоу:** агент `git push` -> запрос брокера `{lab_id, repo_url, key_id, reason}` -> промпт биометрии на хосте -> брокер подписывает и возвращает только подпись -> wipe + аудит лог `secrets-audit.jsonl`.
+- **Скраб:** секрет заменяется на `***redacted***` во всех blackbox файлах — continuous field analysis как в 1Password.
+- **Политика:**
+```yaml
+secrets:
+  github_ssh:
+    allowed_repos: ["github.com/myorg/*"]
+    ttl: "5m"
+    require_biometric: true
+```
+- **Интеграция с 1Password:** `petri vault sync --backend 1password` проксирует через Environments MCP Server, без локального хранения секретов.
+
+4. Раскладка файлов
+```
+~/.petri/
+  binary/
+  stacks/<name>@sha256/rootfs/
+  labs/lab-7a9f2/workspace/ + upper/ + blackbox/
+  vm/alpine.img
+  cache/
+  docker.sock
+```
+
+5. CLI и API
+```
+petri create <task> [--stack name] [--agent claude] [--checkpoint-every 5m]
+petri list [--all]
+petri diff <id> [--json]
+petri logs <id> [--replay | --follow]
+petri checkpoint <id> [msg]
+petri restore <id> <checkpoint>
+petri merge <id> [--as-pr]
+petri discard <id>
+petri stack list|pull|build|rm
+petri secret add|list|allow
+petri vault status
+petri import docker
+petri compat docker -- <docker args>
+petri dashboard
+```
+REST API совместим с Docker: `GET /v1.44/containers/json`.
+
+6. Безопасность
+- Rootless по умолчанию, seccomp default deny (80 syscalls allow-list), no-new-privs, drop all caps.
+- Секреты в tmpfs, скраб из логов, хранение в OS keychain, cosign для стеков.
+
+7. Миграция с Docker
+1. `petri import docker` — `docker image save` -> OCI импорт, volumes tar -> импорт.
+2. Сокет: слушает на `~/.petri/docker.sock`, `DOCKER_HOST` переопределение.
+3. Шим: `/usr/local/bin/docker` wrapper проксирует в Petri если запущен.
+Откат: unset DOCKER_HOST.
+
+8. Сборка и дистрибуция
+- Сборка: `cargo build --release`, кросс через `cargo-xwin`, `cargo-zigbuild`.
+- CI: GitHub Actions matrix.
+- Дистрибуция: `cargo-dist`, brew, winget, deb/rpm, dmg нотаризованный, msi с EV подписью.
+- Цель размера <200МБ (стеки отдельно).
+
+9. Тестирование
+- Unit: GitManager, PolicyEngine.
+- Integration: попытки побега из изоляции должны падать.
+- E2E: `rm -rf /` внутри лабы не влияет на хост.
+- Fuzz: seccomp профиль, yaml парсер.
+- Chaos: агент случайно удаляет файлы, срабатывает circuit breaker.
+
+10. Quality Gates и приемка — на весь проект
+
+10.1 Quality Gates на PR
+- `cargo test`, покрытие >80%, clippy, fmt, cargo audit без high/critical
+- Тест изоляции, тест redact vault, размер бинарника <250МБ
+
+10.2 DoR для техзадачи
+- Указаны затрагиваемые крейты, sequence diagram, OS-специфичные вызовы определены, план отката
+
+10.3 DoD для техзадачи
+- Код + тесты + доки + пример, e2e тест на 3 ОС, схема обновлена, circuit breaker проверен, meta.json содержит stack_hash/model/prompt_hash
+
+10.4 Release Readiness 1.0
+- Все AC зеленые на 3 ОС, perf p95 <4с, оверхед <10%, security review пройден, доки, пакеты подписаны, 3 недели dogfooding с 0 утечками секретов, план отката документирован

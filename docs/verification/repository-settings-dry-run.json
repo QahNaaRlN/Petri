@@ -1,0 +1,170 @@
+{
+  "repository": "QahNaaRlN/Petri",
+  "mode": "dry-run",
+  "status": "planned",
+  "completed": [],
+  "attempted": null,
+  "legacy_master_policy": "delete only after ancestry/default/protection checks",
+  "delete_master_requested": true,
+  "before": {
+    "repository": "QahNaaRlN/Petri",
+    "settings": {
+      "default_branch": "master",
+      "allow_squash_merge": true,
+      "allow_merge_commit": true,
+      "allow_rebase_merge": true,
+      "delete_branch_on_merge": false,
+      "allow_update_branch": false
+    },
+    "main_sha": "f7a2af7916ac5db10fa4eb9330ed8336c5b933b7",
+    "master_sha": "f7a2af7916ac5db10fa4eb9330ed8336c5b933b7",
+    "dev_sha": "f7a2af7916ac5db10fa4eb9330ed8336c5b933b7",
+    "dev_protection_issues": [
+      "dev has no branch protection"
+    ],
+    "dev_checks": {},
+    "dev_required_signatures_enabled": false,
+    "master_ancestry_status": "identical",
+    "protection_branch": "main",
+    "protection_issues": [
+      "main has no branch protection"
+    ],
+    "checks": {},
+    "active_ruleset_ids": [],
+    "required_signatures_enabled": false,
+    "open_prs_targeting_master": [],
+    "open_prs_from_master": []
+  },
+  "planned": [
+    {
+      "method": "PATCH",
+      "endpoint": "repos/QahNaaRlN/Petri",
+      "payload": {
+        "allow_squash_merge": false,
+        "allow_rebase_merge": false,
+        "delete_branch_on_merge": true,
+        "allow_update_branch": true
+      }
+    },
+    {
+      "method": "PUT",
+      "endpoint": "repos/QahNaaRlN/Petri/branches/main/protection",
+      "payload": {
+        "required_status_checks": {
+          "strict": true,
+          "checks": [
+            {
+              "context": "Build and portable tests (ubuntu-24.04)",
+              "app_id": 15368
+            },
+            {
+              "context": "Build and portable tests (macos-14)",
+              "app_id": 15368
+            },
+            {
+              "context": "Build and portable tests (windows-2022)",
+              "app_id": 15368
+            },
+            {
+              "context": "Native Linux isolation (required; no skipped success)",
+              "app_id": 15368
+            },
+            {
+              "context": "Dependency vulnerability audit",
+              "app_id": 15368
+            }
+          ]
+        },
+        "enforce_admins": true,
+        "required_pull_request_reviews": {
+          "dismiss_stale_reviews": true,
+          "require_code_owner_reviews": false,
+          "required_approving_review_count": 0,
+          "require_last_push_approval": false,
+          "bypass_pull_request_allowances": {
+            "users": [],
+            "teams": [],
+            "apps": []
+          }
+        },
+        "restrictions": null,
+        "required_linear_history": false,
+        "allow_force_pushes": false,
+        "allow_deletions": false,
+        "required_conversation_resolution": true,
+        "block_creations": false,
+        "lock_branch": false,
+        "allow_fork_syncing": false
+      }
+    },
+    {
+      "method": "PUT",
+      "endpoint": "repos/QahNaaRlN/Petri/branches/dev/protection",
+      "payload": {
+        "required_status_checks": {
+          "strict": true,
+          "checks": [
+            {
+              "context": "Build and portable tests (ubuntu-24.04)",
+              "app_id": 15368
+            },
+            {
+              "context": "Build and portable tests (macos-14)",
+              "app_id": 15368
+            },
+            {
+              "context": "Build and portable tests (windows-2022)",
+              "app_id": 15368
+            },
+            {
+              "context": "Native Linux isolation (required; no skipped success)",
+              "app_id": 15368
+            },
+            {
+              "context": "Dependency vulnerability audit",
+              "app_id": 15368
+            }
+          ]
+        },
+        "enforce_admins": true,
+        "required_pull_request_reviews": {
+          "dismiss_stale_reviews": true,
+          "require_code_owner_reviews": false,
+          "required_approving_review_count": 0,
+          "require_last_push_approval": false,
+          "bypass_pull_request_allowances": {
+            "users": [],
+            "teams": [],
+            "apps": []
+          }
+        },
+        "restrictions": null,
+        "required_linear_history": false,
+        "allow_force_pushes": false,
+        "allow_deletions": false,
+        "required_conversation_resolution": true,
+        "block_creations": false,
+        "lock_branch": false,
+        "allow_fork_syncing": false
+      }
+    },
+    {
+      "method": "PATCH",
+      "endpoint": "repos/QahNaaRlN/Petri",
+      "payload": {
+        "default_branch": "main"
+      }
+    },
+    {
+      "method": "GIT_PUSH_LEASE_DELETE",
+      "endpoint": "https://github.com/QahNaaRlN/Petri.git",
+      "payload": {
+        "ref": "refs/heads/master",
+        "expected_old_sha": "f7a2af7916ac5db10fa4eb9330ed8336c5b933b7"
+      }
+    }
+  ],
+  "historical": true,
+  "superseded_by": "repository-settings.json",
+  "note": "Plan captured before the authenticated browser applied the settings and the conditional Git deletion removed master."
+}
