@@ -26,7 +26,7 @@ jobs:
       PETRI_WINDOWS_PYTHON_HOME: ${{ inputs.python_home }}
       PETRI_WINDOWS_TOOLCHAIN_MANIFEST: ${{ inputs.toolchain_manifest }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.99.1
