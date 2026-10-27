@@ -2,7 +2,7 @@
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
     [string]$Destination = 'D:\PersonalProjects\Petri',
-    [string]$Branch = 'feat/petri-v0.3'
+    [string]$Branch = 'feat/linux-native-candidate'
 )
 
 Set-StrictMode -Version Latest
