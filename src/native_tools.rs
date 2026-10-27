@@ -781,6 +781,13 @@ fn pin_directory_chain(path: &Path) -> Result<Vec<File>> {
     let mut guards = Vec::new();
     for part in path.components() {
         current.push(part.as_os_str());
+        #[cfg(windows)]
+        if matches!(part, Component::Prefix(_)) {
+            // A verbatim drive prefix alone can report is_absolute(), but
+            // \\?\C: opens the volume rather than the root directory. Wait
+            // for RootDir before pinning the first real filesystem object.
+            continue;
+        }
         if current.is_absolute() {
             guards.push(pin_directory(&current)?);
         }
@@ -1070,6 +1077,24 @@ mod tests {
         );
         let tool = store.import(&source, &path).unwrap();
         store.verify(&tool).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn canonical_directory_chain_starts_at_the_drive_root_directory() {
+        let temporary =
+            tempfile::TempDir::new_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+        let path = temporary.path().canonicalize().unwrap();
+        let guards = pin_directory_chain(&path).unwrap();
+        let expected = path
+            .components()
+            .filter(|part| !matches!(part, Component::Prefix(_)))
+            .count();
+        assert_eq!(guards.len(), expected);
+        assert!(guards.first().unwrap().metadata().unwrap().is_dir());
+        assert!(guards
+            .iter()
+            .all(|guard| guard.metadata().unwrap().is_dir()));
     }
 
     #[cfg(windows)]
