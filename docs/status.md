@@ -1,66 +1,52 @@
-# Матрица реализации и приёмки
+# Статус реализации и проверки
 
-Редакция 0.3, 2026-10-25 UTC. Полный продукт из исходных документов **не завершён**. Здесь отдельно указаны реализованный код, функциональные ограничения и требования, которым ещё нет подтверждения. Компиляция и unit-тест не заменяют настоящий E2E изоляции.
+Дата: 2026-10-27. Общая линия объединяет Linux-кандидат, экспериментальный Windows native backend и подготовку macOS. Исходные SHA и маршрут `dev` → `main` описаны в [записи интеграции](branch-integration.md). Версия CLI — 0.3.0; `0.4-draft1` — редакция [ТЗ](requirements.md) и [ТС](technical-specification.md).
 
-## Срез реализации
+Windows-кандидат реализован для контролируемой офлайн-нагрузки. Он **не прошёл нативную квалификацию Windows** в текущей Linux-среде. Наличие исходников, Windows-бинарника или успешного portable CI не является доказательством изоляции.
 
-| Компонент | Реализованный код | Граница |
+## Реализованный пакет
+
+| Компонент | Реализация | Граница |
 | --- | --- | --- |
-| CLI и lab store | Create/prepare/run, foreground/background supervisor, list, private state, блокировки, metadata | Автовосстановление состояния после произвольного crash требует доработки; записанный PID не является безопасной stop-ручкой |
-| Git | Встроенный libgit2, независимые метаданные, export HEAD, diff, commit, локальная review-ветка | Нет системного Git в runtime; нет Git RPC/agent shim, network push и PR API; merge не двигает main |
-| Linux runtime | Native libc namespaces, pivot_root, rootfs RO, workspace/tmp/dev, Landlock ABI>=3, seccomp, no_new_privs, cap-drop, explicit env | Реальная доступность зависит от host policy; никаких fallback; E2E подтверждается отдельно |
-| Ресурсы | RLIMIT_AS, RLIMIT_CPU, RLIMIT_NPROC | Нет cgroup aggregate CPU/RAM/PIDs; защита от любого resource exhaustion не обещается |
-| Сеть | Отдельный network namespace без внешнего интерфейса | Allowlist/eBPF/slirp/pasta отсутствуют, непустой network отклоняется |
-| Конфигурация | Строгий YAML, известные поля, лимит размера, безопасные defaults | Custom deny_paths отклоняются до сквозного enforcement; baseline secret exclusions обязательны |
-| Стеки | Offline rootfs/OCI import, SHA-256/size/diff_ids, безопасная распаковка, content-addressed rootfs | Только поднабор OCI; whiteout/hardlink/device/sparse entries не поддержаны; нет registry pull/build/cosign/SBOM |
-| Снимки | Workspace+Git copy, stopped-only checkpoint/restore, staging и rollback обычных ошибок | Не process checkpoint; нет полного crash-recovery journal; не overlay-only snapshot |
-| Blackbox | Host-only управляющие JSONL events, pipe output cast, timed replay | Нет PTY/input/resize, точного interleaving stdout/stderr, fanotify/eBPF/agent trajectory/token accounting |
-| Docker discovery | Unix socket, ping/version/info/list/inspect, явные 501 | Нет create/start/stop/remove/images/networks/volumes/exec/build/log streams; Compose не поддерживается |
-| Vault | Явный статус недоступности и Unsupported команды | Нет хранилища реальных секретов, broker authentication, signing, bearer issuance/revocation, биометрии |
-| macOS/Windows | Переносимые host-side части и заготовка интерфейса отказа | Нет VM/WSL runtime, настоящего cross-platform E2E и пакетов |
+| Linux | Существующие namespaces/pivot_root/Landlock/seccomp и legacy CLI сохранены | Per-process rlimits прежние, cgroup aggregate budgets не добавлены |
+| Windows native | Собственные публичные Win32 bindings: LPAC с уникальным AppContainer SID лабы, процесс suspended, проверка токена/Job перед resume | Windows 11 24H2 x64 client, обычный пользователь; фактическая совместимость CPython и ACL требует запуска qualification suite |
+| Job | Kill-on-last-handle-close, без breakaway; групповые committed memory, process count, user CPU time; wall/output limits guardian | Hard-limit enforcement и реакция supervisor различаются; CPU — user time, не CPU bandwidth/RSS |
+| Права и пути | Owner-only control ACL, RW workspace/temp/private profile, RX copied tools, Low integrity writable objects; отказ на reparse/hardlink/ADS/опасных именах | Первый профиль ограничивает имена файлов ASCII; не меняет ACL системных/сторонних инструментов и исходника |
+| Нативное хранилище | `native-v2/laboratories` отдельно от legacy `labs`; отдельные Lab/Execution/Operation IDs, целая атомарно заменяемая запись состояния | Автомиграция старых labs не реализована; старые записи не переписываются |
+| Управление | Идемпотентный start/stop, Ready перед resume, Running после resume, полный DWORD, остановка по потере stdin lease | Неизвестный исход блокирует повторный запуск; нет автоматического доказательства остановки после crash без живого guardian |
+| Tools | Offline manifest, полный file inventory/SHA-256, PE x64, изолированный CPython 3.12 layout, staging и content identity | Импорт каталога не проверяет отсутствующий архив или подпись издателя; package SHA в manifest — заявленное происхождение |
+| Git | Встроенный libgit2, committed HEAD export, независимые metadata, безопасные diff/commit | Нет системного Git, Git passthrough, push/Vault; `.git` workload не определяет host repository |
+| Checkpoint/restore | Остановленные workspace+Git, digest, private copies, durable restore intent, rollback обычных ошибок, журнал не откатывается | Нет process state; crash между несколькими rename оставляет RecoveryRequired; прежние деревья сохраняются закрытыми для workload |
+| Наблюдения | Host JSONL, ограниченные pipe stdout/stderr, result manifest с provenance/digests и явными gaps | Нет ConPTY/input/GUI, полного syscall/network/FS аудита, скрытого reasoning агента или цифровой подписи |
+| Диск | Проверка свободного места и ограниченное программное наблюдение writable областей | Нет hard disk quota; overshoot и resource DoS полностью не исключены |
 
-## Покрытие исходных AC
+Нативный AppContainer имеет созданные ОС private filesystem/registry области помимо явно переданных путей. Backend сообщает filesystem profile path, учитывает его при soft disk scan; изменение `HOME` само по себе не является файловым барьером. Registry storage не считается полноценной дисковой квотой. Очистка профиля — отдельная операция после подтверждённой остановки.
 
-| Исходный критерий | Статус | Что ещё требуется для полного AC |
-| --- | --- | --- |
-| AC-1 Жизненный цикл | Частично | Измеренная скорость и полный сценарий агента; базовый native Linux E2E прошёл в CI, но stock host без готового стека требует отдельного bootstrap |
-| AC-2 Git-иммутабельность | Частично | Локальные операции и защита исходного refs реализованы; полноценный авторизованный агентский Git broker/push отсутствует |
-| AC-3 Изоляция | Базовый native Linux E2E прошёл в CI; полный AC частичен | Реальные тесты host path/network/escape на поддерживаемой конфигурации; полноценный аудит network_blocked отсутствует |
-| AC-4 Vault | Не реализован | Keychain/1Password, signing protocol, authorization, revoke, audit, real TouchID/Hello |
-| AC-5 StackHub | Частично | Локальный OCI/rootfs и reuse есть; registry node22 catalog, подписи, SBOM, reproducible build и OCI совместимость шире поднабора отсутствуют |
-| AC-6 Наблюдаемость | Частично | Host events и захват вывода есть; полноценный PTY replay, FS/process/network event collection и upper-layer diff не реализованы |
-| AC-7 Docker | Только read-only discovery | Полный заявленный Docker API, запуск workloads, Compose E2E и import Docker volumes/images |
-| AC-8 Три ОС | Не выполнен | Backend macOS VM и Windows WSL2, подходящие runners, реальный AC-1…AC-4 на каждой ОС |
+## Проверки этой ветки
 
-## Проверки текущего изменения
+Фактический итог команд записывается в [руководстве кандидата](windows-native-candidate.md). Выполняются Rust tests/clippy/format, Linux release build, cross-build Windows x64 GNU, Python governance tests, синтаксис qualification harness и сохранность оригинальных документов.
 
-Проверено локально на Linux x86_64, Rust 1.99.1:
+Windows native qualification запускается отдельно через [manual workflow](../.github/workflows/windows-native.yml) на подготовленном Windows 11 24H2 runner. Неподдержанная ОС/учётная запись/отсутствующие инструменты дают UNVERIFIED/ненулевой код. Успех назначенной ограниченной suite не закрывает всю ТС.
 
-| Проверка | Фактический результат |
-| --- | --- |
-| `cargo test --all-targets --all-features --locked` | 37 unit + 6 integration = **43 passed**, 0 failed; 1 native E2E явно ignored |
-| `cargo fmt --all --check` | Успешно |
-| `cargo clippy --all-targets --all-features --locked -- -D warnings` | Успешно, без предупреждений |
-| `cargo build --release --locked` | Успешно; Linux ELF **4,072,008 bytes** (3.88 MiB) |
-| `cargo audit --json --no-fetch --file Cargo.lock` | **0 vulnerabilities, 0 warnings**, после обновления git2 и YAML-парсера; база RustSec загружена в этом сеансе |
-| Хеши оригиналов | 8/8 совпадают с SHA256SUMS |
-| Локальные Markdown-ссылки | Все разрешаются |
-| `petri doctor` вне ограничений tool sandbox | namespace probe available; Landlock ABI -1, `Function not implemented (os error 38)`; **supported=false** |
+Linux E2E требует доступных rootless namespaces и Landlock ABI >=3. Историческое подтверждение базового Linux E2E относится к [CI run старого кандидата](https://github.com/QahNaaRlN/Petri/actions/runs/40242644431), а не к этой ветке. Новый результат CI не предполагается по наличию workflow.
 
-Локальный native E2E не пройден: текущий хост не предоставляет Landlock. Успешно проверен отдельный отрицательный integration test: при недоступной изоляции/неполном стеке команда не исполняется на хосте, маркер не создаётся, статус становится Failed и записывается аудит. Linux E2E вынесен в отдельную CI job с реальным static BusyBox; на коммите `251cd325aa53a3b983cc89930ae55df64d7d5f22` настоящий E2E прошёл: **1 passed, 0 failed, 0 ignored** ([CI run](https://github.com/QahNaaRlN/Petri/actions/runs/40242644431)). В том же прогоне audit и переносимые Linux/macOS проверки прошли; Windows release-сборка на момент записи ещё выполнялась. Локально macOS/Windows не запускались. Последующие результаты доступны в PR. Coverage и perf не измерены.
-Внешний контейнер/ограниченный executor может запрещать Unix socket либо user namespaces. Разрешение tool sandbox на локальный socket не равняется выдаче capabilities внутри лабы. Неуспешный syscall probe должен остаться диагностическим отказом, а не поводом ослабить профиль.
+## Что не закрыто
 
-## Открытые релизные гейты
+- Нативная Windows-квалификация, adversarial IPC/service/late-alias проверки, fault injection журналов и развёртывание на реальном обычном аккаунте.
+- Полный controller transport из ТС: универсальная типизированная входная схема, expected revision и идемпотентность всех mutating операций. Текущий `petri windows` — ограниченная CLI-поверхность; start/stop имеют operation IDs.
+- Реальное подключение Meridian/агентского адаптера, политика сетевого доступа/provider broker, Git broker и Vault.
+- Автоматическое recovery с наблюдением сохранившегося Job; crash restore требует явного разбора оставленного intent. Cleanup state не приравнивается к наличию нулевого process count.
+- Полноценный нативный macOS backend, дополнительные Windows стеки и GUI/ConPTY.
+- Linux cgroups, hard disk quota, подписанные установщики, registry/builder/SBOM, внешний аудит и обновления.
+- Полная Docker API/Compose совместимость, release coverage/perf/dogfooding.
 
-- Расширенный Linux E2E: процессы-потомки, сигналы, более широкий набор filesystem escape fixtures; базовый native E2E уже прошёл.
-- Групповые cgroup limits, circuit breaker и проверенный механизм ограниченной сети.
-- Типизированный Git broker/adapter агента и безопасный authenticated Vault.
-- VM/WSL2 backends; реальные macOS/Windows runners и ручная биометрия.
-- Полный целевой OCI/registry/builder/signature/SBOM pipeline.
-- Заявленное покрытие Docker API, migration и devcontainer integration.
-- Покрытие >80% по отчёту, актуальный dependency audit и fuzz/chaos campaigns.
-- Измеренные cold/warm startup p95, FS overhead, binary/package sizes по методике.
-- Подписанные release packages, независимый security review, план обновления/отката.
-- Три недели dogfooding на трёх реальных JS/Python/Rust проектах и проверка журналов на утечки.
+Это остаток продукта из ТЗ, а не скрытая функциональность, включаемая флагом ослабления sandbox.
 
-Эти пункты не скрываются за 501 или документацией: явная ошибка — корректное поведение отсутствующей возможности, но не выполнение исходного функционального требования.
+
+## Подготовка macOS — 2026-10-27
+
+Общая линия содержит [пакет подготовки](macos-native-candidate.md): отдельные ТЗ/ТС, оценку публичных API Apple, MP-00…09 plan, 15 групп критериев приёмки, минимальные feasibility entitlements и read-only preflight. Он не исполняет helper, не подписывает/устанавливает код и не меняет TCC/SIP. Mac backend остаётся NOT IMPLEMENTED/UNVERIFIED.
+
+Первый исследуемый профиль — macOS 26 arm64, обычный non-admin account, native CPython 3.12 offline fixture. Точный build/patch и signing identities определяются на реальном Mac. Перенос Job/LPAC, per-lab App Sandbox containers, исполнение imported tools, контроль detached descendants и aggregate budgets не предполагаются существующими: это блокирующие исследования. Полный путь к runtime указан в плане, без скрытого fallback к SBPL, Endpoint Security или VM.
+
+Read-only preflight и его portable contract tests подтверждают только честный inventory/refusal/JSON, а не native isolation. Ранее перечисленные Windows проверки относятся к исходному кандидату; новые результаты подготовки записаны на входной странице macOS.

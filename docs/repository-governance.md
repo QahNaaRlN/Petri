@@ -55,11 +55,11 @@
 
 Подтверждённые отдельно для **обеих** веток значения classic protection: PR required, 0 обязательных approvals, stale dismissal включён, code-owner/latest-push approval не требуются; strict/up-to-date включён, все пять check contexts привязаны к GitHub Actions (app ID 15368); conversations должны быть разрешены; администраторы подчиняются правилам; linear history выключена; force push и deletion запрещены. Lock branch, deployment gates и обязательные подписи коммитов не включены. Обе защиты, merge-commit-only режим и отключённый auto-merge действуют; `master` удалена. Коммиты `main` и `dev` при настройке не менялись, PR #1 не сливался.
 
-На 2026-10-27 Linux-ветка переименована штатной GitHub rename operation в `feat/linux-native-candidate`; исходный runtime-коммит `70e0bc69c1a5be0761f073e69b6efae9a751b22d` сохранён. GitHub закрыл [PR #1](https://github.com/QahNaaRlN/Petri/pull/1), поскольку переименована его head branch. [Заменяющий draft PR #2](https://github.com/QahNaaRlN/Petri/pull/2) имеет head `feat/linux-native-candidate`, base `dev`; история #1 остаётся доступной. Merge не выполнялся. Таблица выше и JSON-снимки в `verification/` отражают дату исходной настройки, а не состояние PR после rename.
+История переименования 2026-10-27: Linux-ветка переименована штатной GitHub rename operation в `feat/linux-native-candidate`; исходный runtime-коммит `70e0bc69c1a5be0761f073e69b6efae9a751b22d` сохранён. GitHub закрыл [PR #1](https://github.com/QahNaaRlN/Petri/pull/1), поскольку переименована его head branch. [Заменяющий draft PR #2](https://github.com/QahNaaRlN/Petri/pull/2) имеет head `feat/linux-native-candidate`, base `dev`; история #1 остаётся доступной. На момент переименования merge не выполнялся. Последующая интеграция описана ниже. Таблица выше и JSON-снимки в `verification/` отражают дату исходной настройки, а не состояние PR после rename.
 
-Имена платформенных кандидатов: `feat/linux-native-candidate`, `feat/windows-native-candidate`, `feat/macos-native-candidate`. Windows-кандидат сохраняет Linux основу, macOS-подготовка продолжает общие контракты Windows-кандидата. Это ветки разработки, не три принятых релиза. Постоянные `main`/`dev`, их защита, default и merge policy не изменяются.
+Имена платформенных кандидатов: `feat/linux-native-candidate`, `feat/windows-native-candidate`, `feat/macos-native-candidate`. Windows-кандидат сохраняет Linux основу, macOS-подготовка продолжает общие контракты Windows-кандидата. Это ветки разработки, не три принятых релиза. При переименовании содержимое `main`/`dev` не менялось; защита, default и merge policy сохраняются при последующей интеграции.
 
-До слияния Linux PR #2 для работы с Linux-кандидатом следует клонировать `feat/linux-native-candidate`; для остальных платформ выбирается соответствующая кандидатная ветка. После его слияния в `dev` новые рабочие ветки создаются от актуальной `dev`. Promotion в `main` — отдельный PR и отдельное решение. Старое имя `master` удалено после проверки защиты и сохранности истории; новые PR его не используют. Дополнительная пустая `release/*` не создаётся.
+Общая линия разработки — `dev`, promotion — отдельный PR `dev` → `main`. Linux принят через PR #2, Windows/macOS входят через интеграционный PR #3 с сохранением всех кандидатных SHA. [Запись интеграции](branch-integration.md) отделяет исходные снимки и текущие ограничения от исторических GitHub settings. Для обычной разработки клонируйте `dev`; для чтения принятого общего среза — `main`. Кандидатную ветку выбирайте явно только при работе с соответствующим исходным снимком. Сохранённые JSON verification files отражают дату исходной настройки; их не переписывают под новые merge SHA.
 
 ## Применение GitHub settings с локальной авторизацией
 
@@ -80,11 +80,11 @@ python scripts/configure_github.py --verify --delete-master
 
 ## Локальная копия Windows
 
-Желаемый путь: `D:\PersonalProjects\Petri`. Фактическое клонирование на личный диск Windows не выполнялось; работа продолжена в облачной среде по согласованию с владельцем. Подготовлен безопасный [scripts/clone-windows.ps1](../scripts/clone-windows.ps1): по умолчанию выбирает этот путь и ветку реализации, проверяет существующий каталог, origin и чистоту рабочего дерева. До слияния PR #1 ручные команды для нового каталога в PowerShell:
+Желаемый путь: `D:\PersonalProjects\Petri`. Фактическое клонирование на личный диск Windows не выполнялось; работа продолжена в облачной среде по согласованию с владельцем. Подготовлен безопасный [scripts/clone-windows.ps1](../scripts/clone-windows.ps1): по умолчанию выбирает этот путь и ветку реализации, проверяет существующий каталог, origin и чистоту рабочего дерева. Для общей линии разработки ручные команды для нового каталога в PowerShell:
 
 ```powershell
 New-Item -ItemType Directory -Force 'D:\PersonalProjects' | Out-Null
-git clone --branch feat/linux-native-candidate https://github.com/QahNaaRlN/Petri.git 'D:\PersonalProjects\Petri'
+git clone --branch dev https://github.com/QahNaaRlN/Petri.git 'D:\PersonalProjects\Petri'
 git -C 'D:\PersonalProjects\Petri' status
 ```
 
@@ -94,7 +94,7 @@ git -C 'D:\PersonalProjects\Petri' status
 
 ## Проверки подготовленных инструментов
 
-Текущие проверки: **55 Python-тестов прошли** (48 настройки и 7 маршрутизации веток). Покрыты запреты обхода и ослабления правил, обе постоянные ветки, ошибочные ответы, 403, ancestry и устаревший SHA при удалении. Реальный локальный Git-тест подтверждает: устаревшая lease отклоняет удаление, актуальная удаляет только ожидаемый ref.
+Исторические проверки настройки: **55 Python-тестов прошли** (48 настройки и 7 маршрутизации веток). Покрыты запреты обхода и ослабления правил, обе постоянные ветки, ошибочные ответы, 403, ancestry и устаревший SHA при удалении. Реальный локальный Git-тест подтверждает: устаревшая lease отклоняет удаление, актуальная удаляет только ожидаемый ref.
 
 До применения настроек через UI read-only GitHub dry-run с `--delete-master` завершился со статусом `planned`, выполненных записей — 0; [сохранённый план](verification/repository-settings-dry-run.json) отражает обе ветки и условное удаление. Тогда попытка применения скриптом остановилась на первом `PATCH` с HTTP 403, успешных административных записей скрипта — 0. Это исторический результат ограниченной integration, а не текущая блокировка: позднее настройки завершены через авторизованный GitHub UI и подтверждены, `master` удалена отдельной атомарной Git-операцией. Скрипт совместим с GitHub CLI 2.46 без `--slurp`.
 

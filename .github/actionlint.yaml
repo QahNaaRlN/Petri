@@ -1,0 +1,5 @@
+# Declares a qualification-runner label for static validation; it does not
+# provision a runner or establish Windows native qualification.
+self-hosted-runner:
+  labels:
+    - petri-win11-24h2

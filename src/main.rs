@@ -1,4 +1,5 @@
 use anyhow::{bail, Context, Result};
+mod windows_cli;
 use clap::{Parser, Subcommand};
 use petri::{
     git,
@@ -31,6 +32,8 @@ struct Cli {
 }
 #[derive(Subcommand)]
 enum Action {
+    /// Experimental native Windows Python laboratory; machine-readable responses.
+    Windows(windows_cli::WindowsCli),
     /// Create an isolated snapshot of repository HEAD; provide an explicit command or --prepare.
     Create {
         task: String,
@@ -187,8 +190,13 @@ fn entry() -> Result<()> {
                 .map(|p| p.data_local_dir().to_path_buf())
         })
         .context("cannot determine application state directory; specify --home")?;
+    let command = match cli.command {
+        Action::Windows(command) => std::process::exit(windows_cli::entry(home, command)),
+        other => other,
+    };
     let store = Store::open(home)?;
-    match cli.command {
+    match command {
+        Action::Windows(_) => bail!("internal Windows dispatch failure"),
         Action::Create{task,repo,stack,prepare,detach,command}=>{
             if !prepare&&command.is_empty(){bail!("provide -- <program> [args] or --prepare; agent adapters are not bundled")}
             if prepare&&!command.is_empty(){bail!("--prepare cannot be combined with a command")}
