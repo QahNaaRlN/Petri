@@ -1,0 +1,64 @@
+ТС — Technical Specification — Проект Petri — v0.2
+Исправления по ревью
+
+1. Git-защита — реализация
+- Bare: `~/.petri/bare/<repo-blake3>` 0700, владелец хост, не монтируется в контейнер.
+- Worktree: создается gitoxide, `.git` — файл с `gitdir: /home/petri-bare/...`. Монтируется ro.
+- Shim: в rootfs стека `/usr/local/bin/git` — скрипт `#!/bin/sh exec /usr/local/bin/petri-git-proxy "$@"`. Прокcи отправляет запрос по vsock/unix в GitManager.
+- GitManager: проверяет политику, выполняет git на хосте от имени хост-юзера, возвращает результат. Push в запрещенные ветки отклоняется до touch bare.
+- Hook: `reference-transaction` в bare проверяет что транзакция не трогает refs/heads/main от lab-id.
+- FS гарантия: даже если агент вызовет /usr/bin/git напрямую, bare недоступен в mount ns.
+
+2. Сеть и файлы
+- **Landlock:** в LinuxIsolator после pivot_root вызываем landlock_restrict_self с правилами: allow /workspace rw, /tmp rw, /proc ro, остальное deny. Пути из `deny.paths` — явно deny.
+- **Net:** 
+  - none: нет net ns вообще (CLONE_NEWNET без veth).
+  - allowlist: создается pasta/slirp, внутри контейнера DNS 10.0.2.3 — это DNS-прокси на хосте, резолвит только allowlist, кэш 60с, логирует запросы.
+  - eBPF cgroup: программа типа BPF_PROG_TYPE_CGROUP_SKB attached к cgroup лабы, проверяет dst IP против allowlist IP (из DNS), drop иначе.
+- Seccomp: остается, генерируется из PolicyEngine, 80 allow.
+
+3. Секреты — реализация двух классов
+- **Vault broker:** `petri-vault-broker` слушает `~/.petri/vault.sock` 0700, аутентифицирует lab-id по pidfd + cgroup.
+- **Class A SSH:** `SSH_AUTH_SOCK=/run/petri/vault-ssh.sock` → прокси → брокер → подпись через `ssh-agent` на хосте (ключ в Keychain/1Password). В контейнер ключ не попадает.
+- **Class B bearer:** два режима:
+  - `mode: broker-push` — агент вызывает `petri vault push` → брокер сам делает git push, токен не выдается агенту. Рекомендуемый для git.
+  - `mode: ephemeral-memfd` — брокер создает memfd, пишет токен, fd передается агенту через SCM_RIGHTS, файл unlink сразу, TTL 2м, после TTL fd закрывается брокером, токен затирается. Агент видит токен, но коротко.
+- Скраб: post-processor blackbox заменяет паттерны токенов на `***redacted***`, но не считается защитой.
+
+4. Docker compat — явный набор
+```rust
+enum DockerApiCoverage {
+  Implemented,
+  NotImplemented501,
+  FallbackToRealDocker,
+}
+```
+MVP impl:
+- `GET /_ping`, `/version`, `/info`
+- `GET /containers/json`, `POST /containers/create`, `/containers/{id}/(start|stop|remove|json|logs|wait)`
+- `GET /images/json`, `POST /images/create`
+Остальные → 501 с JSON `{"message":"not implemented in phase 1, requires network/volume api, use real docker"}`.
+Compose: если compose-file использует networks/volumes — возвращаем ошибку на этапе parse с подсказкой.
+
+5. Демоны и расположение
+- Core: без демона. `petri create` форкает супервайзер, пишет pid в `~/.petri/labs/{id}/supervisor.pid`, завершается вместе с лабой.
+- Optional services:
+  - `petri vault broker` — `systemd --user` unit `petri-vault.service`, `launchd plist` на Mac.
+  - `petri compat up` — поднимает `~/.petri/docker.sock`.
+- Лабы: `~/.petri/labs/{id}/workspace` — канон. Команда `petri link` создает symlink `.petri/labs/{id}` в проекте для IDE. По умолчанию проект не загрязняется.
+- Rootless: проверяем `unshare --user -r` работает, subuid/subgid, cgroup v2 delegation (`systemd-run --user --scope -p Delegate=yes`). Если нет — явная ошибка с инструкцией.
+
+6. CI и приемка
+- **Phase 1 CI:** ubuntu-24.04, тесты изоляции: попытка escape, чтение /etc/shadow, сеть при none, push в main.
+- **Phase 2 CI:** macos-14 (apple-virtualization), windows-2022 (WSL2). Те же тесты внутри VM.
+- **Phase 3 QA (manual gates):**
+  - Подписи: `cosign verify` для стеков, `brew`/`winget` подписи проверяются вручную.
+  - Биометрия: ручной тест TouchID/Hello.
+  - Perf: bench `hyperfine petri create --stack node22 -- true` p95 <4с, FS overhead <10% vs native `cp`.
+  - Dogfooding: 3 недели на 3 реальных репо, 0 утечек секретов в blackbox (grep).
+- Все нереализованное — 501, не OK.
+
+7. Обновленные Quality Gates
+- PR: `cargo test --all-features`, coverage >80%, clippy, Landlock test, eBPF test (requires privileged runner).
+- E2E: `rm -rf /` внутри лабы не влияет на хост (проверка через overlay upper).
+- Vault: тест что Class A ключ не появляется в upper.tar, Class B токен живет <5м.

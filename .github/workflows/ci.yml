@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  portable:
+    name: Build and portable tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14, windows-2022]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.99.1
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Validate branch flow
+        run: python scripts/check_branch_flow.py
+      - name: Formatting
+        run: cargo fmt --all -- --check
+      - name: Lints
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+      - name: Portable host tests (native isolation is a separate Linux gate)
+        run: cargo test --locked --all-features
+      - name: Repository setup tests
+        run: python -m unittest discover -s tests -p "test_*.py" -v
+      - name: Windows clone script validation
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PWD 'scripts/clone-windows.ps1'), [ref]$tokens, [ref]$errors) | Out-Null
+          if ($errors.Count -gt 0) { throw ($errors | Out-String) }
+          $destination = Join-Path $env:RUNNER_TEMP 'petri-bootstrap-dry-run'
+          & ./scripts/clone-windows.ps1 -Destination $destination -WhatIf
+          if (Test-Path -LiteralPath $destination) { throw 'WhatIf created a directory' }
+      - name: Release binary
+        run: cargo build --locked --release
+
+  linux-isolation:
+    name: Native Linux isolation (required; no skipped success)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.99.1
+      - uses: Swatinem/rust-cache@v2
+      - name: Install static rootfs executable
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes busybox-static
+      - name: Enable rootless user namespaces on this disposable runner
+        run: |
+          sudo sysctl -w kernel.unprivileged_userns_clone=1
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          test "$(sysctl -n kernel.unprivileged_userns_clone)" = 1
+          test "$(sysctl -n kernel.apparmor_restrict_unprivileged_userns)" = 0
+      - name: Real namespace, filesystem and network isolation
+        env:
+          PETRI_E2E_BUSYBOX: /bin/busybox
+        run: cargo test --locked --test runtime_linux -- --ignored --nocapture
+
+  dependency-audit:
+    name: Dependency vulnerability audit
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.99.1
+      - uses: taiki-e/install-action@cargo-audit
+      - run: cargo audit

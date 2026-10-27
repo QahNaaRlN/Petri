@@ -1,0 +1,165 @@
+ТЗ — Technical Requirements — Проект «Матрешка» / Petri
+OS для агентов с изолированными лабораториями
+
+**Версия:** 0.1.0
+**Дата:** 2026-10-26
+**Статус:** Draft
+**EN term:** Technical Requirements (TR), используется аббревиатура **ТЗ** (кириллица)
+
+---
+
+1. Обзор
+**Название:** Petri (рабочее название Матрешка)
+**Слоган:** OS для агентов. Каждая задача — в своей чашке Петри.
+**Тип:** Кроссплатформенное CLI-приложение (Linux, macOS, Windows), один бинарник, batteries included.
+
+**Проблема:**
+Агент, работающий в IDE, может удалить файлы, выйти за границы проекта, забыть шаги. Docker требует отдельной установки (Docker Desktop на Windows), git — отдельной. Нет единого безопасного лаба с записью действий и иммутабельностью исходников.
+
+**Решение:**
+Один бинарник `petri`, который содержит:
+- переписанное с нуля ядро изоляции (аналог Docker, но без демона и без legacy-ошибок)
+- встроенный git (worktree, иммутабельность как в React)
+- black-box наблюдаемости
+- хаб стеков
+
+Формула: Lab = Docker + git worktree + observability. Двойная защита: Docker = здание, worktree = чашка Петри.
+
+2. Цели и не-цели
+**Цели:**
+1. Дать агенту комнату, где он может сломать всё, не навредив хосту и main-ветке.
+2. Сделать установку одним бинарником без Docker Desktop и системного git.
+3. Обеспечить полную воспроизводимость и аудит.
+4. Одинаково работать на 3 ОС с идентичным UX.
+
+**Не-цели (для MVP):**
+- Не оркестратор для продакшн-контейнеров
+- Не IDE
+- Не требует root по умолчанию
+
+3. Термины
+- **Лаба (Lab):** Одноразовая связка worktree + контейнер + логи. ID вида `lab-7a9f2`.
+- **Матрешка (Doll):** Слой изоляции. Хост > VM/namespace > контейнер > workspace.
+- **Стек (Stack):** OCI-образ с инструментами (node22, python3.12-torch). Хранится в `~/.petri/stacks`.
+- **Черный ящик (Black box):** Папка `.petri/labs/{id}/blackbox/` с терминалом, событиями, diff.
+- **Чекпоинт:** Снапшот лабы (overlay upperdir).
+
+4. Функциональные требования
+4.1 Жизненный цикл лабы
+- `petri create "<задача>" --stack <имя> --agent <claude|custom>` — создает worktree в `.petri/labs/{id}/workspace` на ветке `petri/{задача}-{id}`, поднимает контейнер, запускает агента.
+- `petri list` — список лаб, статус, ресурсы, стоимость токенов.
+- `petri diff <id>` — git diff + fs diff верхнего слоя.
+- `petri logs <id> --replay` — реплей терминала (asciinema .cast).
+- `petri checkpoint <id> [msg]` — создать снапшот.
+- `petri restore <id> <checkpoint>` — откат.
+- `petri merge <id>` — создает PR/merge в main только после ручного подтверждения.
+- `petri discard <id>` — удалить лабу и worktree.
+
+4.2 Изоляция
+- FS: rootfs read-only, writable только /workspace и /logs.
+- Сеть: по умолчанию `none`, включается через `petri.yaml` `network: [registry.npmjs.org]`.
+- Ресурсы: CPU/RAM лимиты по умолчанию, cap-drop ALL, no-new-privileges.
+- Запрет монтирования: `~/.ssh`, `.env`, `docker.sock` запрещены политикой по умолчанию.
+
+4.3 Git-слой (Иммутабельность)
+- Встроенный git через gitoxide (Rust), системный git не нужен.
+- main/bare репо read-only для агента.
+- Каждая лаба — отдельный worktree. Агент коммитит только в свою ветку.
+- Защита веток: deny_push_to = [main, master] по умолчанию.
+
+4.4 Хаб стеков
+- `petri stack list / pull / build` — управление стеками.
+- Стеки — OCI layout, хранятся content-addressable в `~/.petri/stacks`.
+- Декларативный `petri.yaml` в корне проекта.
+
+4.5 Наблюдаемость
+- Терминал: pty wrapper -> `blackbox/terminal.cast`
+- FS: diff overlay upperdir -> `blackbox/fs.diff`
+- События: `blackbox/events.jsonl` — file_write, process_spawn, network_request
+- Трейс агента: `blackbox/trajectory.jsonl`
+
+4.6 Совместимость и миграция
+- Docker-совместимый сокет: `~/.petri/docker.sock` отвечает на Docker API.
+- CLI shim: `petri compat docker` перехватывает `docker` команды.
+- Команда `petri import docker` — импорт volumes и образов из Docker.
+- Поддержка `devcontainer.json` для IDE.
+
+4.7 Брокер секретов — аналог 1Password for Agents
+Требование добавлено после релиза 1Password for Agents (22 окт 2026). Агент запрашивает credential, пользователь подтверждает биометрией, 1Password подставляет напрямую без показа секрета модели.
+В Petri:
+- Секреты живут в брокере хоста (OS Keychain + опционально 1Password Connect)
+- Внутри лабы агент видит только плейсхолдер `{{petri_secret:github_ssh}}`
+- `SSH_AUTH_SOCK` указывает на прокси брокера, приватный ключ никогда не входит в контейнер — подпись на хосте
+- Git credential helper проксирует через брокер, токен инжектится в момент push и стирается
+- Биометрическое подтверждение на запрос, TTL, аудит-лог
+
+5. Нефункциональные требования
+- Установка: один бинарник, curl | sh, brew, winget. Размер <250МБ.
+- Производительность: старт лабы <2с Linux, <4с Mac/Win.
+- Офлайн: работает без интернета после pull стеков.
+- Безопасность: rootless по умолчанию, SBOM для стеков, подпись коммитов.
+- Кроссплатформенность: идентичный UX, разный движок внутри.
+
+6. Пользовательские сценарии
+Сценарий 1 — Безопасный агент: dev делает `petri create "fix auth"` -> агент внутри удаляет файлы -> dev делает `petri discard` -> main цел.
+Сценарий 2 — Аудит: месяц спустя нужно понять, кто сделал коммит. В коммите `petri-model`, `petri-stack-hash`, ссылка на blackbox IPFS.
+Сценарий 3 — Миграция с Docker: команда использует Docker. Ставит Petri, ставит `DOCKER_HOST=~/.petri/docker.sock`, все старые `docker-compose up` работают.
+
+7. Критерии приемки — на ВЕСЬ проект, не только Vault
+
+AC-1: Жизненный цикл лабы
+- Given чистый хост без Docker и git, When `petri create "test"` Then лаба создается <2с Linux / <4с Mac/Win, `petri list` показывает Running.
+- Given Running лаба, When `rm -rf /workspace/*` внутри, Then хост и main ветка нетронуты, `petri diff` показывает удаление только в upper.
+- Given лаба, When `petri discard <id>`, Then папка `.petri/labs/<id>` удалена, worktree удален.
+
+AC-2: Иммутабельность (Git)
+- Given main на коммите A, When агент коммитит в лабе, Then `git log main` все еще на A, `git log petri/*` содержит новый коммит.
+- Given политика `deny_push_to: [main]`, When агент `git push origin main` внутри лабы, Then push отклонен брокером с PolicyDenied.
+
+AC-3: Изоляция
+- Given `network: none`, When агент `curl https://google.com`, Then запрос падает с таймаутом, в `events.jsonl` есть network_blocked.
+- Given дефолтный профиль, When внутри `cat /root/.ssh/id_rsa`, Then No such file.
+
+AC-4: Брокер секретов
+- Given секрет `github_ssh` в OS Keychain, When агент `git push`, Then на хосте появляется биометрия TouchID/Hello, без approve push не уходит.
+- Given approve, When push ушел, Then приватный ключ никогда не появляется в `workspace/`, `terminal.cast`, `events.jsonl` — только `***redacted***`.
+- Given TTL 5m, When прошло 5m, Then `/run/petri/secrets/*` пусто, сокет закрыт.
+
+AC-5: Хаб стеков
+- Given `petri.yaml` с `stack: node22`, When `petri create`, Then внутри `node -v` == версия стека, `npm` работает офлайн если deps в стеке.
+- Given две лабы с одним стеком, When проверка диска, Then блобы захардлинкованы, место не удвоено.
+
+AC-6: Наблюдаемость
+- Given лаба работала 10 мин, When `petri logs <id> --replay`, Then полный терминал с таймингами воспроизводится.
+- Given агент менял файлы, When `petri diff <id>`, Then diff совпадает с diff upper слоя.
+
+AC-7: Docker-совместимость
+- Given `petri` запущен и `DOCKER_HOST=~/.petri/docker.sock`, When `docker ps` и `docker-compose up`, Then команды работают, показывают лабы Petri.
+- Given `petri import docker` с существующим volume, When импорт завершен, Then данные volume доступны в новой лабе.
+
+AC-8: Кроссплатформенность
+- Given чистые VM Ubuntu 24.04, macOS 14, Win11 без Docker, When `petri create`, Then сценарии AC-1..AC-4 проходят на всех трех.
+
+8. Definition of Ready (DoR) — для всего проекта
+- [ ] User Story в формате "Как [роль], я хочу [действие], чтобы [ценность]"
+- [ ] Описаны предусловия и зависимости от других компонентов
+- [ ] Указаны затрагиваемые ОС (Linux / Mac / Win)
+- [ ] Моки CLI
+- [ ] Описаны риски безопасности
+- [ ] Критерии приемки в Given/When/Then
+
+9. Definition of Done (DoD) — для всего проекта
+- [ ] Код Rust, `cargo fmt`, `cargo clippy -- -D warnings` чистый
+- [ ] Unit-тесты >80% для нового кода, интеграционный тест создает реальную лабу
+- [ ] Тест изоляции: попытка побега, чтение ~/.ssh, сеть при none — должен падать
+- [ ] Скраб логов: секрет не в terminal.cast / events.jsonl
+- [ ] Доки в md обновлены, CLI help актуален
+- [ ] Работает на 3 ОС в CI или помечено OS-specific
+- [ ] Артефакт — один бинарник <250МБ, подпись верифицирована
+
+10. Release Readiness (1.0)
+- [ ] Все AC-1..AC-8 зеленые на 3 ОС в CI
+- [ ] Нет critical/high уязвимостей в `cargo audit`, cosign подпись валидна
+- [ ] Доки: README, petri.yaml reference, Docker migration guide
+- [ ] Производительность: старт лабы p95 <4с, оверхед FS <10%
+- [ ] 3 реальных проекта (JS, Python, Rust) прошли e2e
